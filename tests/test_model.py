@@ -130,6 +130,20 @@ class ModelContractTests(unittest.TestCase):
         self.assertAlmostEqual(GammaIrradiationModel.direction_multiplier(0), 0.5)
         self.assertAlmostEqual(GammaIrradiationModel.direction_multiplier(1), 1.0)
 
+    def test_configurable_transition_weights_redefine_event_distribution(self):
+        model = GammaIrradiationModel(
+            dimensions=(5, 5),
+            weights={"shift": 0, "frenkel_create": 1, "knock": 0},
+        )
+        atom_id = next(
+            atom["id"] for atom in model.snapshot()["atoms"] if atom["state"] == "correct"
+        )
+
+        weights = model._event_type_weights(atom_id, energy=55)
+
+        self.assertEqual(weights, {"frenkel_create": 1.0})
+        self.assertEqual(model.snapshot()["config"]["weights"]["frenkel_create"], 1)
+
     def test_cascade_records_commits_or_dissipation_without_exceeding_budget(self):
         model = GammaIrradiationModel(dimensions=(5, 5), seed_sim=7)
         model._relocate(0, "interstitial:0.5,0.5")
