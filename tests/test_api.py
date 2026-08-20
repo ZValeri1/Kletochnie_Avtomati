@@ -36,3 +36,30 @@ class ApiContractTests(unittest.TestCase):
         self.assertEqual(response.json()["total_probability"], 1.0)
         self.assertEqual(response.json()["outcomes"][0]["event_type"], "no_change")
         self.assertEqual(self.client.get("/api/model/snapshot").json()["revision"], 0)
+
+    def test_history_endpoints_restore_and_reapply_model_state(self):
+        self.client.post("/api/model", json={"dimensions": [5, 5], "seed_sim": 6})
+        self.client.post("/api/model/step", json={"forced_energy": 55})
+
+        undone = self.client.post("/api/model/undo")
+        redone = self.client.post("/api/model/redo")
+
+        self.assertEqual(undone.status_code, 200)
+        self.assertTrue(undone.json()["can_redo"])
+        self.assertEqual(redone.status_code, 200)
+        self.assertFalse(redone.json()["can_redo"])
+
+    def test_project_round_trip_and_experiment_are_reproducible(self):
+        self.client.post("/api/model", json={"dimensions": [5, 4], "moved_atoms": 2, "seed_init": 8, "seed_sim": 9})
+        self.client.post("/api/model/step", json={"forced_energy": 55})
+
+        saved = self.client.post("/api/project/save", json={"name": "api_round_trip"})
+        self.client.post("/api/model", json={"dimensions": [3, 3]})
+        loaded = self.client.post("/api/project/load", json={"name": "api_round_trip"})
+        experiment = self.client.post("/api/experiment", json={"runs": 3, "steps": 4, "master_seed": 12})
+
+        self.assertEqual(saved.status_code, 200)
+        self.assertEqual(loaded.status_code, 200)
+        self.assertEqual(loaded.json()["dimensions"], [5, 4])
+        self.assertEqual(experiment.status_code, 200)
+        self.assertEqual(len(experiment.json()["trajectory"]), 5)

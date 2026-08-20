@@ -45,6 +45,8 @@ class GammaIrradiationModel:
             raise ValueError("dimensions must have two or three axes with at least two nodes")
         self.dimensions = dimensions
         self.profile = profile
+        self.seed_init = seed_init
+        self.seed_sim = seed_sim
         self._init_rng = random.Random(seed_init)
         self._sim_rng = random.Random(seed_sim)
         self.revision = 0
@@ -56,6 +58,9 @@ class GammaIrradiationModel:
         self.events: list[dict] = []
         self._initialize_ideal()
         self.initialize_exact(moved_atoms)
+        self._history: list[dict] = []
+        self._history_cursor = -1
+        self._commit_history()
 
     def _build_sites(self) -> dict[str, Site]:
         sites: dict[str, Site] = {}
@@ -119,6 +124,76 @@ class GammaIrradiationModel:
         atom.site_key = destination_key
         self._occupied[destination_key] = atom_id
 
+    def _history_state(self) -> dict:
+        return {
+            "atom_sites": {atom_id: atom.site_key for atom_id, atom in self.atoms.items()},
+            "act_number": self.act_number,
+            "total_dose_ev": self.total_dose_ev,
+            "events": list(self.events),
+        }
+
+    def _restore_history_state(self, state: dict) -> None:
+        self._occupied.clear()
+        for atom_id, site_key in state["atom_sites"].items():
+            self.atoms[int(atom_id)].site_key = site_key
+            self._occupied[site_key] = int(atom_id)
+        self.act_number = state["act_number"]
+        self.total_dose_ev = state["total_dose_ev"]
+        self.events = list(state["events"])
+
+    def _commit_history(self) -> None:
+        del self._history[self._history_cursor + 1 :]
+        self._history.append(self._history_state())
+        self._history_cursor = len(self._history) - 1
+
+    def undo(self) -> dict:
+        if self._history_cursor == 0:
+            raise ValueError("No earlier model state")
+        self._history_cursor -= 1
+        self._restore_history_state(self._history[self._history_cursor])
+        self.revision += 1
+        return self.snapshot()
+
+    def redo(self) -> dict:
+        if self._history_cursor >= len(self._history) - 1:
+            raise ValueError("No later model state")
+        self._history_cursor += 1
+        self._restore_history_state(self._history[self._history_cursor])
+        self.revision += 1
+        return self.snapshot()
+
+    def available_destinations(self, atom_id: int) -> list[dict]:
+        if atom_id not in self.atoms:
+            raise ValueError("Atom does not exist")
+        kind = self.sites[self.atoms[atom_id].site_key].kind
+        allowed = "interstitial" if kind == "lattice" else "lattice"
+        return [
+            self._site_payload(site)
+            for site in self._sites_of_kind(allowed)
+            if site.key not in self._occupied
+        ]
+
+    def move(self, atom_id: int, destination_key: str) -> dict:
+        if destination_key not in {site["key"] for site in self.available_destinations(atom_id)}:
+            raise ValueError("Destination is not a free compatible site")
+        source_key = self.atoms[atom_id].site_key
+        self._relocate(atom_id, destination_key)
+        self.act_number += 1
+        self.revision += 1
+        event = {
+            "act": self.act_number,
+            "revision": self.revision,
+            "target_atom_id": atom_id,
+            "energy_ev": 0.0,
+            "event_type": "manual_move",
+            "source": source_key,
+            "destinations": [destination_key],
+            "metrics": self.metrics(),
+        }
+        self.events.append(event)
+        self._commit_history()
+        return event
+
     def _energy(self) -> float:
         q_max = self.CASCADE_Q_MAX_EV if self.profile == "cascade_test" else self.PHYSICAL_Q_MAX_EV
         return q_max * self._sim_rng.betavariate(1, 4)
@@ -128,8 +203,16 @@ class GammaIrradiationModel:
         target_id = self._sim_rng.choice(list(self.atoms))
         event_type = "no_change"
         destinations: list[str] = []
+        target_kind = self.sites[self.atoms[target_id].site_key].kind
+        if energy >= 4 and target_kind == "interstitial":
+            free_lattice = [site for site in self._sites_of_kind("lattice") if site.key not in self._occupied]
+            if free_lattice:
+                destination = min(free_lattice, key=lambda site: self._distance(site, self.sites[self.atoms[target_id].site_key]))
+                self._relocate(target_id, destination.key)
+                event_type = "recombine_d1"
+                destinations = [destination.key]
         # The first vertical slice supports the normative Frenkel creation event.
-        if energy >= 40 and self.sites[self.atoms[target_id].site_key].kind == "lattice":
+        elif energy >= 40 and target_kind == "lattice":
             free = [site for site in self._sites_of_kind("interstitial") if site.key not in self._occupied]
             if free:
                 destination = self._sim_rng.choice(free)
@@ -149,7 +232,12 @@ class GammaIrradiationModel:
             "metrics": self.metrics(),
         }
         self.events.append(event)
+        self._commit_history()
         return event
+
+    @staticmethod
+    def _distance(left: Site, right: Site) -> float:
+        return sum(abs(a - b) for a, b in zip(left.coordinate, right.coordinate))
 
     def metrics(self) -> dict:
         lattice = self._sites_of_kind("lattice")
@@ -192,7 +280,43 @@ class GammaIrradiationModel:
             "vacancies": [self._site_payload(site) for site in self._sites_of_kind("lattice") if site.key not in self._occupied],
             "metrics": self.metrics(),
             "act": self.act_number,
+            "history_index": self._history_cursor,
+            "history_length": len(self._history),
+            "can_undo": self._history_cursor > 0,
+            "can_redo": self._history_cursor < len(self._history) - 1,
         }
+
+    def export_state(self) -> dict:
+        return {
+            "format_version": 1,
+            "config": {
+                "dimensions": self.dimensions,
+                "profile": self.profile,
+                "seed_init": self.seed_init,
+                "seed_sim": self.seed_sim,
+            },
+            "state": self._history_state(),
+            "history": self._history,
+            "history_cursor": self._history_cursor,
+            "revision": self.revision,
+        }
+
+    @classmethod
+    def from_export(cls, export: dict) -> "GammaIrradiationModel":
+        if export.get("format_version") != 1:
+            raise ValueError("Unsupported project format")
+        config = export["config"]
+        model = cls(
+            dimensions=tuple(config["dimensions"]),
+            seed_init=config.get("seed_init"),
+            seed_sim=config.get("seed_sim"),
+            profile=config.get("profile", "fe_co60_physical"),
+        )
+        model._history = export.get("history", [export["state"]])
+        model._history_cursor = export.get("history_cursor", len(model._history) - 1)
+        model._restore_history_state(export["state"])
+        model.revision = export.get("revision", 0)
+        return model
 
     @staticmethod
     def _site_payload(site: Site) -> dict:
