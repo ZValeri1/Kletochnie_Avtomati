@@ -70,6 +70,19 @@ class ApiContractTests(unittest.TestCase):
         self.assertEqual(message["type"], "snapshot")
         self.assertEqual(message["snapshot"]["revision"], 0)
 
+    def test_websocket_streams_event_delta_with_revision(self):
+        self.client.post("/api/model", json={"dimensions": [4, 4], "seed_sim": 2})
+
+        with self.client.websocket_connect("/ws/model") as websocket:
+            websocket.receive_json()
+            stepped = self.client.post("/api/model/step", json={"forced_energy": 0})
+            message = websocket.receive_json()
+
+        self.assertEqual(stepped.status_code, 200)
+        self.assertEqual(message["type"], "event")
+        self.assertEqual(message["event"]["revision"], 1)
+        self.assertIn("deltas", message["event"])
+
     def test_history_endpoints_restore_and_reapply_model_state(self):
         self.client.post("/api/model", json={"dimensions": [5, 5], "seed_sim": 6})
         self.client.post("/api/model/step", json={"forced_energy": 55})

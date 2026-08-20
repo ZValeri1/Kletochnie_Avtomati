@@ -1,4 +1,5 @@
 import unittest
+import random
 
 from backend.app.core.model import GammaIrradiationModel
 
@@ -140,6 +141,27 @@ class ModelContractTests(unittest.TestCase):
         self.assertTrue(
             all(item.get("child_energy_ev", 0) <= item["energy_ev"] for item in cascade)
         )
+
+    def test_randomized_model_invariants_hold_for_1000_generated_cases(self):
+        generator = random.Random(901)
+        for _ in range(1000):
+            dimensions = (
+                (generator.randrange(2, 7), generator.randrange(2, 7))
+                if generator.random() < 0.65
+                else (generator.randrange(2, 5), generator.randrange(2, 5), generator.randrange(2, 5))
+            )
+            model = GammaIrradiationModel(
+                dimensions=dimensions,
+                moved_atoms=generator.randrange(0, 2) if min(dimensions) >= 3 else 0,
+                seed_init=generator.randrange(2**31),
+                seed_sim=generator.randrange(2**31),
+            )
+            atom_count = len(model.atoms)
+            for _ in range(3):
+                model.step(forced_energy=generator.uniform(0, 100))
+                self.assertEqual(len(model.atoms), atom_count)
+                self.assertEqual(len(model._occupied), atom_count)
+                self.assertEqual(len(set(model._occupied.values())), atom_count)
 
 
 if __name__ == "__main__":
