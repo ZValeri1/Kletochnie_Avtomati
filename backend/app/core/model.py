@@ -54,11 +54,11 @@ class GammaIrradiationModel:
         "replacement_return": 20.0,
     }
     DEFAULT_WEIGHTS = {
-        "shift": 1.0, "frenkel_create": 0.2, "knock": 0.1, "swap": 0.05,
+        "shift": 1.0, "frenkel_create": 0.2, "knock": 0.0, "swap": 0.0,
         "surface_out": 0.01, "recombine_d1": 0.9, "fill_d2": 0.3,
-        "interstitial_hop": 1.0, "to_surface": 0.01, "replacement_knock": 0.1,
+        "interstitial_hop": 1.0, "to_surface": 0.01, "replacement_knock": 0.0,
         "surface_hop": 1.0, "surface_return_d1": 0.4, "surface_fill_d2": 0.2,
-        "surface_push": 0.1, "to_interstitial": 0.2, "replacement_return": 0.05,
+        "surface_push": 0.0, "to_interstitial": 0.2, "replacement_return": 0.0,
     }
 
     def __init__(
@@ -140,6 +140,13 @@ class GammaIrradiationModel:
         cell_ranges = [range(size - 1) for size in self.dimensions]
         for coordinate in self._cartesian(lattice_ranges):
             add("lattice", tuple(float(value) for value in coordinate))
+        for coordinate in self._cartesian(lattice_ranges):
+            for axis, limit in enumerate(self.dimensions):
+                if coordinate[axis] + 1 >= limit:
+                    continue
+                neighbour = list(coordinate)
+                neighbour[axis] += 1
+                self._link(lattice_key(coordinate), lattice_key(tuple(neighbour)))
         for coordinate in self._cartesian(cell_ranges):
             support_coordinates = self._cartesian([range(value, value + 2) for value in coordinate])
             interstitials.append(
@@ -197,7 +204,9 @@ class GammaIrradiationModel:
         for index, left in enumerate(surface_sites):
             for right in surface_sites[index + 1 :]:
                 shared_supports = len(set(left.support_keys) & set(right.support_keys))
-                if shared_supports == 2:
+                if left.kind == right.kind == "bridge" and left.normal == right.normal and shared_supports == 1:
+                    self._link(left.key, right.key)
+                elif shared_supports == 2:
                     self._link(left.key, right.key, 1.0 if left.normal == right.normal else 0.5)
         return sites
 
@@ -399,12 +408,12 @@ class GammaIrradiationModel:
         state = self._atom_state(atom)
         if state in {"correct", "surface"}:
             prefix = "surface_" if state == "surface" else ""
-            for destination in free_neighbours("interstitial"):
+            for destination in free_neighbours("lattice"):
                 groups[f"{prefix}shift"].append(EventCandidate(f"{prefix}shift", destination))
+            for destination in free_neighbours("interstitial"):
                 groups[f"{prefix}frenkel_create"].append(
                     EventCandidate(f"{prefix}frenkel_create", destination)
                 )
-                groups[f"{prefix}knock"].append(EventCandidate(f"{prefix}knock", destination))
             if state == "surface":
                 for destination in free_neighbours("bridge") + free_neighbours("hollow"):
                     groups["surface_out"].append(EventCandidate("surface_out", destination))
@@ -418,10 +427,10 @@ class GammaIrradiationModel:
                 groups["replacement_knock"].append(
                     EventCandidate("replacement_knock", destination, partner_id)
                 )
-            for destination in self._vacancies_within(site.key, 2.0):
-                if destination not in {candidate.destination_key for candidate in groups["recombine_d1"]}:
+            if not groups["recombine_d1"]:
+                for destination in self._vacancies_at_distance(site.key, 2.0):
                     groups["fill_d2"].append(EventCandidate("fill_d2", destination))
-            for destination in self._nearest_free_surface_sites(site):
+            for destination in self._unit_distance_free_surface_sites(site):
                 groups["to_surface"].append(EventCandidate("to_surface", destination))
         else:
             for destination in free_neighbours(site.kind):
@@ -433,37 +442,33 @@ class GammaIrradiationModel:
                 groups["replacement_return"].append(
                     EventCandidate("replacement_return", destination, partner_id)
                 )
-            for destination in self._vacancies_within(site.key, 2.0):
-                if destination not in {candidate.destination_key for candidate in groups["surface_return_d1"]}:
+            if not groups["surface_return_d1"]:
+                for destination in self._vacancies_at_distance(site.key, 2.0):
                     groups["surface_fill_d2"].append(EventCandidate("surface_fill_d2", destination))
-            for destination in self._nearest_free_sites("interstitial", site):
+            for destination in self._unit_distance_free_sites("interstitial", site):
                 groups["to_interstitial"].append(EventCandidate("to_interstitial", destination))
-            groups["surface_knock"].extend(groups["surface_hop"])
         return groups
 
-    def _nearest_free_surface_sites(self, source: Site) -> list[str]:
+    def _unit_distance_free_surface_sites(self, source: Site) -> list[str]:
         free = [
             site for site in self._sites_of_kind("bridge") + self._sites_of_kind("hollow")
-            if site.key not in self._occupied
+            if site.key not in self._occupied and self._distance(source, site) == 1.0
         ]
-        if not free:
-            return []
-        distance = min(self._distance(source, site) for site in free)
-        return [site.key for site in free if self._distance(source, site) == distance]
+        return [site.key for site in free]
 
-    def _nearest_free_sites(self, kind: SiteKind, source: Site) -> list[str]:
-        free = [site for site in self._sites_of_kind(kind) if site.key not in self._occupied]
-        if not free:
-            return []
-        distance = min(self._distance(source, site) for site in free)
-        return [site.key for site in free if self._distance(source, site) == distance]
+    def _unit_distance_free_sites(self, kind: SiteKind, source: Site) -> list[str]:
+        return [
+            site.key
+            for site in self._sites_of_kind(kind)
+            if site.key not in self._occupied and self._distance(source, site) == 1.0
+        ]
 
-    def _vacancies_within(self, source_key: str, maximum_distance: float) -> list[str]:
+    def _vacancies_at_distance(self, source_key: str, distance: float) -> list[str]:
         source = self.sites[source_key]
         return [
             site.key
             for site in self._sites_of_kind("lattice")
-            if site.key not in self._occupied and self._distance(source, site) <= maximum_distance
+            if site.key not in self._occupied and self._distance(source, site) == distance
         ]
 
     def _event_type_weights(self, atom_id: int, energy: float) -> dict[str, float]:

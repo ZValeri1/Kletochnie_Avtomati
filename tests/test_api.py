@@ -83,6 +83,19 @@ class ApiContractTests(unittest.TestCase):
         self.assertEqual(message["event"]["revision"], 1)
         self.assertIn("deltas", message["event"])
 
+    def test_probability_diagnostic_handles_surface_defect_atoms(self):
+        created = self.client.post(
+            "/api/model", json={"dimensions": [5, 5], "moved_surface_atoms": 1, "seed_init": 9}
+        ).json()
+        atom_id = next(atom["id"] for atom in created["atoms"] if atom["state"] == "surface_defect")
+
+        response = self.client.post(
+            "/api/model/probabilities", json={"atom_id": atom_id, "energy_ev": 20}
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertAlmostEqual(response.json()["total_probability"], 1.0, places=12)
+
     def test_history_endpoints_restore_and_reapply_model_state(self):
         self.client.post("/api/model", json={"dimensions": [5, 5], "seed_sim": 6})
         self.client.post("/api/model/step", json={"forced_energy": 55})

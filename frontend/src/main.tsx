@@ -77,7 +77,24 @@ const defaults: Config = {
     to_interstitial: 18,
     replacement_return: 20,
   },
-  weights: {},
+  weights: {
+    shift: 1,
+    frenkel_create: 0.2,
+    knock: 0,
+    swap: 0,
+    surface_out: 0.01,
+    recombine_d1: 0.9,
+    fill_d2: 0.3,
+    interstitial_hop: 1,
+    to_surface: 0.01,
+    replacement_knock: 0,
+    surface_hop: 1,
+    surface_return_d1: 0.4,
+    surface_fill_d2: 0.2,
+    surface_push: 0,
+    to_interstitial: 0.2,
+    replacement_return: 0,
+  },
 };
 const thresholdGroups = [
   {
@@ -151,7 +168,17 @@ async function api<T>(path: string, body?: object): Promise<T> {
     headers: { "Content-Type": "application/json" },
     body: body ? JSON.stringify(body) : undefined,
   });
-  if (!res.ok) throw new Error((await res.json()).detail ?? "Request failed");
+  if (!res.ok) {
+    const payload = await res.text();
+    try {
+      const parsed = JSON.parse(payload) as { detail?: string };
+      throw new Error(parsed.detail ?? "Request failed");
+    } catch (error) {
+      if (error instanceof SyntaxError)
+        throw new Error(payload || "Request failed");
+      throw error;
+    }
+  }
   return res.json() as Promise<T>;
 }
 

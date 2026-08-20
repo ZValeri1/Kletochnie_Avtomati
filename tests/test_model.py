@@ -144,6 +144,48 @@ class ModelContractTests(unittest.TestCase):
         self.assertEqual(weights, {"frenkel_create": 1.0})
         self.assertEqual(model.snapshot()["config"]["weights"]["frenkel_create"], 1)
 
+    def test_internal_atom_shift_targets_only_an_adjacent_lattice_vacancy(self):
+        model = GammaIrradiationModel(dimensions=(5, 5))
+        moved_id = next(atom.atom_id for atom in model.atoms.values() if atom.site_key == "lattice:2,2")
+        model._relocate(moved_id, "interstitial:2.5,2.5")
+        target_id = next(atom.atom_id for atom in model.atoms.values() if atom.site_key == "lattice:2,1")
+
+        shifts = model._candidate_groups(target_id)["shift"]
+
+        self.assertEqual([candidate.destination_key for candidate in shifts], ["lattice:2,2"])
+
+    def test_surface_atom_shift_targets_only_a_lattice_vacancy(self):
+        model = GammaIrradiationModel(dimensions=(5, 5))
+        moved_id = next(atom.atom_id for atom in model.atoms.values() if atom.site_key == "lattice:0,0")
+        model._relocate(moved_id, "bridge:0.5,-0.5")
+        target_id = next(atom.atom_id for atom in model.atoms.values() if atom.site_key == "lattice:1,0")
+
+        shifts = model._candidate_groups(target_id)["surface_shift"]
+
+        self.assertEqual([candidate.destination_key for candidate in shifts], ["lattice:0,0"])
+
+    def test_interstitial_atom_candidates_respect_lattice_and_surface_destinations(self):
+        model = GammaIrradiationModel(dimensions=(5, 5))
+        moved_id = next(atom.atom_id for atom in model.atoms.values() if atom.site_key == "lattice:0,0")
+        model._relocate(moved_id, "interstitial:0.5,0.5")
+
+        groups = model._candidate_groups(moved_id)
+
+        self.assertTrue(all(key.startswith("lattice:") for key in [item.destination_key for item in groups["recombine_d1"]]))
+        self.assertTrue(all(key.startswith("interstitial:") for key in [item.destination_key for item in groups["interstitial_hop"]]))
+        self.assertTrue(all(key.startswith("bridge:") for key in [item.destination_key for item in groups["to_surface"]]))
+
+    def test_surface_defect_candidates_cover_surface_return_and_interior_transition(self):
+        model = GammaIrradiationModel(dimensions=(5, 5))
+        moved_id = next(atom.atom_id for atom in model.atoms.values() if atom.site_key == "lattice:0,0")
+        model._relocate(moved_id, "bridge:0.5,-0.5")
+
+        groups = model._candidate_groups(moved_id)
+
+        self.assertTrue(groups["surface_hop"])
+        self.assertEqual(groups["surface_return_d1"][0].destination_key, "lattice:0,0")
+        self.assertTrue(all(key.startswith("interstitial:") for key in [item.destination_key for item in groups["to_interstitial"]]))
+
     def test_cascade_records_commits_or_dissipation_without_exceeding_budget(self):
         model = GammaIrradiationModel(dimensions=(5, 5), seed_sim=7)
         model._relocate(0, "interstitial:0.5,0.5")
