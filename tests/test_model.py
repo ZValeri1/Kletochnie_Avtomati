@@ -62,6 +62,16 @@ class ModelContractTests(unittest.TestCase):
         model.undo()
         self.assertEqual(model.snapshot()["metrics"]["defects"], 0)
 
+    def test_configurable_energy_threshold_controls_frenkel_creation(self):
+        model = GammaIrradiationModel(
+            dimensions=(5, 5), seed_sim=2, q_max_ev=100, frenkel_threshold_ev=70
+        )
+
+        event = model.step(forced_energy=60)
+
+        self.assertEqual(event["event_type"], "no_change")
+        self.assertEqual(model.snapshot()["config"]["frenkel_threshold_ev"], 70)
+
 
 if __name__ == "__main__":
     unittest.main()

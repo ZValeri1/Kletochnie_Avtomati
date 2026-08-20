@@ -40,6 +40,9 @@ class GammaIrradiationModel:
         seed_init: int | None = None,
         seed_sim: int | None = None,
         profile: str = "fe_co60_physical",
+        q_max_ev: float | None = None,
+        frenkel_threshold_ev: float = 40.0,
+        recombine_threshold_ev: float = 4.0,
     ) -> None:
         if len(dimensions) not in (2, 3) or any(size < 2 for size in dimensions):
             raise ValueError("dimensions must have two or three axes with at least two nodes")
@@ -47,6 +50,12 @@ class GammaIrradiationModel:
         self.profile = profile
         self.seed_init = seed_init
         self.seed_sim = seed_sim
+        default_q_max = self.CASCADE_Q_MAX_EV if profile == "cascade_test" else self.PHYSICAL_Q_MAX_EV
+        self.q_max_ev = q_max_ev if q_max_ev is not None else default_q_max
+        self.frenkel_threshold_ev = frenkel_threshold_ev
+        self.recombine_threshold_ev = recombine_threshold_ev
+        if min(self.q_max_ev, self.frenkel_threshold_ev, self.recombine_threshold_ev) < 0:
+            raise ValueError("energy configuration cannot be negative")
         self._init_rng = random.Random(seed_init)
         self._sim_rng = random.Random(seed_sim)
         self.revision = 0
@@ -195,8 +204,7 @@ class GammaIrradiationModel:
         return event
 
     def _energy(self) -> float:
-        q_max = self.CASCADE_Q_MAX_EV if self.profile == "cascade_test" else self.PHYSICAL_Q_MAX_EV
-        return q_max * self._sim_rng.betavariate(1, 4)
+        return self.q_max_ev * self._sim_rng.betavariate(1, 4)
 
     def step(self, forced_energy: float | None = None) -> dict:
         energy = self._energy() if forced_energy is None else forced_energy
@@ -204,7 +212,7 @@ class GammaIrradiationModel:
         event_type = "no_change"
         destinations: list[str] = []
         target_kind = self.sites[self.atoms[target_id].site_key].kind
-        if energy >= 4 and target_kind == "interstitial":
+        if energy >= self.recombine_threshold_ev and target_kind == "interstitial":
             free_lattice = [site for site in self._sites_of_kind("lattice") if site.key not in self._occupied]
             if free_lattice:
                 destination = min(free_lattice, key=lambda site: self._distance(site, self.sites[self.atoms[target_id].site_key]))
@@ -212,7 +220,7 @@ class GammaIrradiationModel:
                 event_type = "recombine_d1"
                 destinations = [destination.key]
         # The first vertical slice supports the normative Frenkel creation event.
-        elif energy >= 40 and target_kind == "lattice":
+        elif energy >= self.frenkel_threshold_ev and target_kind == "lattice":
             free = [site for site in self._sites_of_kind("interstitial") if site.key not in self._occupied]
             if free:
                 destination = self._sim_rng.choice(free)
@@ -269,6 +277,12 @@ class GammaIrradiationModel:
             "revision": self.revision,
             "dimensions": self.dimensions,
             "mode": "2d" if len(self.dimensions) == 2 else "3d",
+            "config": {
+                "profile": self.profile,
+                "q_max_ev": self.q_max_ev,
+                "frenkel_threshold_ev": self.frenkel_threshold_ev,
+                "recombine_threshold_ev": self.recombine_threshold_ev,
+            },
             "atoms": [
                 {
                     "id": atom.atom_id,
@@ -294,6 +308,9 @@ class GammaIrradiationModel:
                 "profile": self.profile,
                 "seed_init": self.seed_init,
                 "seed_sim": self.seed_sim,
+                "q_max_ev": self.q_max_ev,
+                "frenkel_threshold_ev": self.frenkel_threshold_ev,
+                "recombine_threshold_ev": self.recombine_threshold_ev,
             },
             "state": self._history_state(),
             "history": self._history,
@@ -311,6 +328,9 @@ class GammaIrradiationModel:
             seed_init=config.get("seed_init"),
             seed_sim=config.get("seed_sim"),
             profile=config.get("profile", "fe_co60_physical"),
+            q_max_ev=config.get("q_max_ev"),
+            frenkel_threshold_ev=config.get("frenkel_threshold_ev", 40.0),
+            recombine_threshold_ev=config.get("recombine_threshold_ev", 4.0),
         )
         model._history = export.get("history", [export["state"]])
         model._history_cursor = export.get("history_cursor", len(model._history) - 1)

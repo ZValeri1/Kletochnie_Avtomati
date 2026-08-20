@@ -23,6 +23,9 @@ class ModelRequest(BaseModel):
     seed_init: int | None = None
     seed_sim: int | None = None
     profile: str = "fe_co60_physical"
+    q_max_ev: float | None = Field(default=None, ge=0)
+    frenkel_threshold_ev: float = Field(default=40, ge=0)
+    recombine_threshold_ev: float = Field(default=4, ge=0)
 
 
 class StepRequest(BaseModel):
@@ -70,6 +73,9 @@ def create_model(request: ModelRequest) -> dict:
             seed_init=request.seed_init,
             seed_sim=request.seed_sim,
             profile=request.profile,
+            q_max_ev=request.q_max_ev,
+            frenkel_threshold_ev=request.frenkel_threshold_ev,
+            recombine_threshold_ev=request.recombine_threshold_ev,
         )
     except ValueError as error:
         raise HTTPException(status_code=422, detail=str(error)) from error

@@ -27,6 +27,14 @@ class ApiContractTests(unittest.TestCase):
         self.assertEqual(snapshot.status_code, 200)
         self.assertEqual(snapshot.json()["revision"], 1)
 
+    def test_model_accepts_energy_configuration(self):
+        created = self.client.post(
+            "/api/model", json={"dimensions": [4, 4], "q_max_ev": 120, "frenkel_threshold_ev": 75}
+        )
+
+        self.assertEqual(created.status_code, 201)
+        self.assertEqual(created.json()["config"]["q_max_ev"], 120)
+
     def test_probability_diagnostic_does_not_consume_model_revision(self):
         self.client.post("/api/model", json={"dimensions": [4, 4], "seed_init": 3})
 
