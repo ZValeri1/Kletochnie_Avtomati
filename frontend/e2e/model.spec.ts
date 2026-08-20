@@ -23,7 +23,9 @@ test("creates requested internal and surface defects from the form", async ({
   await expect(
     page.getByText("Вакансии").locator("..").getByText("3"),
   ).toBeVisible();
-  await expect(page.locator(".metrics div").filter({ hasText: /^Дефекты6$/ })).toBeVisible();
+  await expect(
+    page.locator(".metrics div").filter({ hasText: /^Дефекты6$/ }),
+  ).toBeVisible();
 });
 
 test("moves a 2D atom by dragging it in edit mode", async ({ page }) => {
@@ -46,15 +48,45 @@ test("moves a 2D atom by dragging it in edit mode", async ({ page }) => {
   await expect(page.getByText(/manual_move/)).toBeVisible();
 });
 
-test("keeps simulation controls directly after model creation", async ({ page }) => {
+test("keeps simulation controls directly after model creation", async ({
+  page,
+}) => {
   await page.goto("/");
-  const create = await page.getByRole("button", { name: "Создать модель" }).boundingBox();
-  const simulation = await page.getByRole("heading", { name: "Симуляция" }).boundingBox();
-  const parameters = await page.getByRole("heading", { name: "Параметры системы" }).boundingBox();
-  if (!create || !simulation || !parameters) throw new Error("Control panels are not visible");
+  const create = await page
+    .getByRole("button", { name: "Создать модель" })
+    .boundingBox();
+  const simulation = await page
+    .getByRole("heading", { name: "Симуляция" })
+    .boundingBox();
+  const parameters = await page
+    .getByRole("heading", { name: "Параметры системы" })
+    .boundingBox();
+  if (!create || !simulation || !parameters)
+    throw new Error("Control panels are not visible");
 
   expect(simulation.y).toBeGreaterThan(create.y);
   expect(simulation.y).toBeLessThan(parameters.y);
+});
+
+test("allows users to redefine relative transition weights", async ({
+  page,
+}) => {
+  const initialModel = page.waitForResponse(
+    (response) =>
+      response.url().endsWith("/api/model") &&
+      response.request().method() === "POST" &&
+      response.status() === 201,
+  );
+  await page.goto("/");
+  await initialModel;
+  const weights = page.locator("details").nth(1);
+  await weights.locator("summary").click();
+  await expect(weights.getByText(/Относительные веса/)).toBeVisible();
+  const shiftWeight = weights.locator("input").first();
+  await shiftWeight.fill("2.5");
+  await expect(shiftWeight).toHaveValue("2.5");
+  await page.getByRole("button", { name: "Создать модель" }).click();
+  await expect(page.getByText("2D: вид сверху")).toBeVisible();
 });
 
 test("renders the 3D lattice with interactive rotation canvas", async ({

@@ -95,6 +95,10 @@ class GammaIrradiationModel:
         self.weights = {**self.DEFAULT_WEIGHTS, **(weights or {})}
         if min(self.q_max_ev, self.frenkel_threshold_ev, self.recombine_threshold_ev) < 0:
             raise ValueError("energy configuration cannot be negative")
+        if any(value < 0 for value in self.thresholds.values()):
+            raise ValueError("event thresholds cannot be negative")
+        if any(value < 0 for value in self.weights.values()):
+            raise ValueError("event weights cannot be negative")
         self._init_rng = random.Random(seed_init)
         self._sim_rng = random.Random(seed_sim)
         self.revision = 0
@@ -490,9 +494,16 @@ class GammaIrradiationModel:
                     return {reserved: 1.0}
                 local_sum = sum(self.weights.get(key, 1.0) for key in local)
                 return {reserved: mass, **{key: (1 - mass) * self.weights.get(key, 1.0) / local_sum for key in local}}
-        raw = {key: self.weights.get(key.removeprefix("surface_"), 1.0) for key in active}
+        raw = {
+            key: self.weights.get(key, self.weights.get(key.removeprefix("surface_"), 1.0))
+            for key in active
+        }
         total = sum(raw.values())
-        return {key: value / total for key, value in raw.items()}
+        return (
+            {key: value / total for key, value in raw.items() if value > 0}
+            if total > 0
+            else {key: 1.0 / len(raw) for key in raw}
+        )
 
     def probability_outcomes(self, atom_id: int, energy: float) -> list[dict]:
         if atom_id not in self.atoms:

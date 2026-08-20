@@ -428,6 +428,12 @@ i {
   font-size: 10px;
   font-style: normal;
 }
+.weight-note {
+  color: #9eafc5;
+  font-size: 11px;
+  line-height: 1.4;
+  margin: 0 0 9px;
+}
 .scene-editing {
   cursor: grab;
 }

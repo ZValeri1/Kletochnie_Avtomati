@@ -858,6 +858,47 @@ function App() {
               ))}
             </div>
           </details>
+          <details>
+            <summary>Вероятности переходов</summary>
+            <p className="weight-note">
+              Относительные веса: доступные события нормируются до 100%.
+            </p>
+            <div className="threshold-groups">
+              {thresholdGroups.map((group) => (
+                <section
+                  className="threshold-group"
+                  key={`weight-${group.title}`}
+                >
+                  <h3>{group.title}</h3>
+                  {group.keys.map((name) => (
+                    <label key={name}>
+                      <span>{thresholdLabels[name]}</span>
+                      <input
+                        type="number"
+                        min="0"
+                        step="0.01"
+                        value={
+                          config.weights[name] ??
+                          config.weights[name.replace(/^surface_/, "")] ??
+                          1
+                        }
+                        onChange={(e) =>
+                          setConfig((old) => ({
+                            ...old,
+                            weights: {
+                              ...old.weights,
+                              [name]: Number(e.target.value),
+                            },
+                          }))
+                        }
+                      />
+                      <em>вес</em>
+                    </label>
+                  ))}
+                </section>
+              ))}
+            </div>
+          </details>
         </section>
       </aside>
       <section className="workspace">
