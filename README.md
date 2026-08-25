@@ -1,12 +1,177 @@
 # Gamma Irradiation Web Model
 
-Local qualitative model of a 2D or 3D metal lattice under Co-60 gamma irradiation.
+Локальная качественная веб-модель металлической решётки под гамма-облучением Co-60. Приложение моделирует перемещения атомов, вакансии, межузельные и поверхностные дефекты, выбивания и каскады, а затем показывает результат в браузере.
 
-## Run
+> Это исследовательский прототип для изучения сценариев. Модель не является откалиброванным предсказателем свойств материала и не заменяет физический расчёт или эксперимент.
 
-1. Build the frontend from `frontend/` with `pnpm build`.
-2. Run `start.bat` on Windows.
-3. Open `http://127.0.0.1:8000`.
+## Возможности
 
-The Python backend owns the state. The React/Three.js frontend is a view only.
-This is a qualitative research model, not a calibrated material-property predictor.
+- 2D- и 3D-решётки с узлами `lattice`, межузлиями `interstitial`, поверхностными позициями `bridge` и `hollow`.
+- Идеальная, точная, случайная и ручная инициализация дефектов.
+- Профили `fe_co60_physical` и `cascade_test`.
+- Стохастический выбор энергии, типа события и направления.
+- Сдвиги, обмены, пары Френкеля, рекомбинация, переходы к поверхности и выбивания.
+- Каскады вторичных перемещений с распределением энергии, конфликтами и затуханием ветвей.
+- Метрики вакансий, межузельных атомов, поверхностных дефектов, энтропии и дозы на атом.
+- Графики, журнал актов, диагностика вероятностей и визуальная трасса каскада.
+- Ручное редактирование, `undo`/`redo`, сохранение и загрузка проектов.
+- HTTP API, WebSocket и серийные эксперименты с percentile-bootstrap.
+
+## Архитектура
+
+```text
+React + TypeScript + Three.js
+            │ HTTP / WebSocket
+            ▼
+FastAPI backend
+            │
+            ▼
+GammaIrradiationModel
+  решётка · события · каскад · метрики · история
+```
+
+Python-бэкенд является источником истины. Интерфейс отвечает за ввод параметров и визуализацию, а не дублирует логику модели.
+
+## Требования
+
+- Python 3.11+.
+- Node.js 20+ и pnpm.
+- Playwright-браузеры для end-to-end тестов.
+
+Зависимости Python перечислены в [`requirements.txt`](requirements.txt), интерфейса — в [`frontend/package.json`](frontend/package.json).
+
+## Установка
+
+```powershell
+cd D:\gamma-irradiation-web
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install -r requirements.txt
+pnpm --dir frontend install
+pnpm --dir frontend build
+```
+
+## Запуск
+
+```powershell
+cd D:\gamma-irradiation-web
+.\.venv\Scripts\Activate.ps1
+uvicorn backend.app.main:app --host 127.0.0.1 --port 8000
+```
+
+Откройте <http://127.0.0.1:8000>.
+
+Для Windows можно запустить [`start.bat`](start.bat). Скрипт раздаёт собранный интерфейс из `frontend/dist` и запускает API на `127.0.0.1:8000`. Для доступа с другого устройства потребуется отдельно настроить адрес прослушивания, брандмауэр и внешний туннель.
+
+## Работа в интерфейсе
+
+1. Выберите 2D или 3D пространство и размеры решётки.
+2. Задайте внутренние/поверхностные дефекты или концентрацию `c`.
+3. Укажите seed и создайте модель.
+4. Используйте `Шаг` для одного акта или `Пуск` для непрерывной симуляции.
+5. Выберите атом и откройте режим `Вероятности`, чтобы увидеть листовые исходы.
+6. Для ручного переноса включите `Редактирование`.
+7. При выбивании каскад отображается в 2D стрелками и в диагностической панели текстом.
+
+## Основные правила модели
+
+Энергия акта генерируется как:
+
+```text
+Q = Qmax · X,    X ~ Beta(1, 4)
+```
+
+По умолчанию `Qmax = 82 эВ` для физического профиля и `Qmax = 300 эВ` для тестового каскадного профиля.
+
+Сначала отбрасываются события без допустимых назначений или с недостигнутым порогом. Затем тип события выбирается по относительным весам, а конкретное назначение — по направляющему множителю:
+
+```text
+a(c) = 0.5 + 0.35c + 0.15c²
+```
+
+`c` — косинус направления перемещения относительно `+X`. Каскад запускается для `knock`, `surface_knock` и `replacement_knock`.
+
+## API
+
+| Метод | Маршрут | Назначение |
+|---|---|---|
+| `GET` | `/health` | Проверка сервера |
+| `POST` | `/api/model` | Создание модели |
+| `GET` | `/api/model/snapshot` | Текущий снимок |
+| `POST` | `/api/model/step` | Один акт |
+| `POST` | `/api/model/run?steps=N` | Серия актов |
+| `POST` | `/api/model/probabilities` | Вероятности атома |
+| `POST` | `/api/model/move` | Ручное перемещение |
+| `POST` | `/api/model/undo` | Отмена |
+| `POST` | `/api/model/redo` | Повтор |
+| `POST` | `/api/experiment` | Ансамбль и bootstrap |
+| `POST` | `/api/project/save` | Сохранение проекта |
+| `POST` | `/api/project/load` | Загрузка проекта |
+| `WebSocket` | `/ws/model` | Снимки и события |
+
+OpenAPI-документация доступна по адресу <http://127.0.0.1:8000/docs>.
+
+### Пример создания модели
+
+```powershell
+Invoke-RestMethod `
+  -Method Post `
+  -Uri http://127.0.0.1:8000/api/model `
+  -ContentType 'application/json' `
+  -Body '{"dimensions":[20,20],"seed_init":42,"seed_sim":43,"profile":"fe_co60_physical"}'
+```
+
+### Пример шага с фиксированной энергией
+
+```powershell
+Invoke-RestMethod `
+  -Method Post `
+  -Uri http://127.0.0.1:8000/api/model/step `
+  -ContentType 'application/json' `
+  -Body '{"forced_energy":55}'
+```
+
+## Сохранение проектов
+
+Проекты сохраняются в `projects/` и не попадают в Git. В проект входят `manifest.json`, `config.json`, `seeds.json`, `state.json`, начальный и конечный снимки, `events.jsonl` и `metrics.csv`.
+
+## Разработка
+
+```text
+backend/app/core/model.py        # ядро модели
+backend/app/main.py              # FastAPI и WebSocket API
+backend/app/services/projects.py # сохранение проектов
+frontend/src/main.tsx            # React и визуализация
+frontend/src/styles.css          # стили
+tests/test_model.py              # тесты ядра и инвариантов
+tests/test_api.py                # API/WebSocket/проектные тесты
+legacy/                          # прежние скрипты и результаты
+```
+
+Для разработки интерфейса используйте `pnpm --dir frontend dev`; API запускается отдельно.
+
+## Тестирование
+
+```powershell
+.\.venv\Scripts\Activate.ps1
+python -m pytest
+pnpm --dir frontend exec tsc --noEmit
+pnpm --dir frontend build
+pnpm --dir frontend test:e2e
+```
+
+## Ограничения текущей версии
+
+- Модель качественная и не откалибрована под конкретный материал.
+- По умолчанию сервер слушает только `127.0.0.1`.
+- Текущее состояние модели хранится в памяти процесса; проект нужно сохранять отдельно.
+- Состояние генераторов случайных чисел не входит в снимок истории.
+- В 3D текстовая трасса каскада доступна в диагностике, но отдельные стрелки не отрисовываются.
+
+## Вклад в проект
+
+Перед отправкой изменений запускайте тесты, проверку TypeScript и production-сборку. Для новых событий добавляйте тесты на геометрию, нормировку вероятностей, сохранение числа атомов и метрики.
+
+## Лицензия
+
+Файл лицензии в репозитории не указан. До добавления `LICENSE` права на код не определены для свободного использования.
