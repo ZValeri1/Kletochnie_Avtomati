@@ -1,6 +1,8 @@
 import unittest
 import random
 
+from hypothesis import given, settings, strategies as st
+
 from backend.app.core.model import GammaIrradiationModel
 
 
@@ -133,7 +135,7 @@ class ModelContractTests(unittest.TestCase):
     def test_configurable_transition_weights_redefine_event_distribution(self):
         model = GammaIrradiationModel(
             dimensions=(5, 5),
-            weights={"shift": 0, "frenkel_create": 1, "knock": 0},
+            weights={"shift": 0, "frenkel_create": 1, "knock": 0, "swap": 0},
         )
         atom_id = next(
             atom["id"] for atom in model.snapshot()["atoms"] if atom["state"] == "correct"
@@ -163,6 +165,21 @@ class ModelContractTests(unittest.TestCase):
         shifts = model._candidate_groups(target_id)["surface_shift"]
 
         self.assertEqual([candidate.destination_key for candidate in shifts], ["lattice:0,0"])
+
+    def test_surface_atom_diagnostic_includes_surface_exit_before_its_threshold(self):
+        model = GammaIrradiationModel(dimensions=(5, 5))
+        edge_atom_id = next(atom.atom_id for atom in model.atoms.values() if atom.site_key == "lattice:0,2")
+
+        below_threshold = model.probability_outcomes(edge_atom_id, energy=40)
+        at_threshold = model.probability_outcomes(edge_atom_id, energy=60)
+
+        blocked_exits = [item for item in below_threshold if item["event_type"] == "surface_out"]
+        active_exits = [item for item in at_threshold if item["event_type"] == "surface_out"]
+        self.assertTrue(blocked_exits)
+        self.assertTrue(all(item["probability"] == 0 for item in blocked_exits))
+        self.assertTrue(all(not item["active"] and item["threshold_ev"] == 60 for item in blocked_exits))
+        self.assertTrue(active_exits)
+        self.assertTrue(all(item["active"] and item["probability"] > 0 for item in active_exits))
 
     def test_interstitial_atom_candidates_respect_lattice_and_surface_destinations(self):
         model = GammaIrradiationModel(dimensions=(5, 5))
@@ -198,6 +215,33 @@ class ModelContractTests(unittest.TestCase):
             all(item.get("child_energy_ev", 0) <= item["energy_ev"] for item in cascade)
         )
 
+    # ENERGY/PROB/CASC requirements: thresholded knock, directional selection, and energy shares.
+    def test_knock_creates_a_frenkel_pair_and_exposes_cascade_metadata(self):
+        model = GammaIrradiationModel(dimensions=(5, 5), seed_sim=7)
+        atom_id = next(atom.atom_id for atom in model.atoms.values() if atom.site_key == "lattice:2,2")
+
+        candidate = model._candidate_groups(atom_id)["knock"][0]
+        model._apply_candidate(atom_id, candidate)
+        cascade = model._process_cascade(candidate.destination_key, 80)
+
+        self.assertEqual(model.metrics()["defects"], 2 + len([
+            item for item in cascade if item["status"] == "committed"
+        ]) * 2)
+        self.assertTrue(all("sequence" in item and "source_site" in item for item in cascade))
+        self.assertAlmostEqual(sum(model._dirichlet_shares(4)), 1.0, places=12)
+
+    def test_candidate_weights_prefer_the_beam_direction(self):
+        model = GammaIrradiationModel(dimensions=(5, 5))
+        atom_id = next(atom.atom_id for atom in model.atoms.values() if atom.site_key == "lattice:2,2")
+
+        weights = [candidate.direction_weight for candidate in model._candidate_groups(atom_id)["knock"]]
+
+        self.assertGreater(max(weights), min(weights))
+
+    def test_invalid_energy_profile_is_rejected(self):
+        with self.assertRaisesRegex(ValueError, "profile"):
+            GammaIrradiationModel(profile="unknown")
+
     def test_randomized_model_invariants_hold_for_1000_generated_cases(self):
         generator = random.Random(901)
         for _ in range(1000):
@@ -222,3 +266,24 @@ class ModelContractTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+# SIM-FULL-2D-001 / SIM-FULL-3D-001: deterministic model invariants over 1000 inputs.
+@settings(max_examples=1000, deadline=None)
+@given(
+    dimensions=st.one_of(
+        st.tuples(st.integers(2, 6), st.integers(2, 6)),
+        st.tuples(st.integers(2, 4), st.integers(2, 4), st.integers(2, 4)),
+    ),
+    seed=st.integers(0, 2**31 - 1),
+    energy=st.floats(min_value=0, max_value=100, allow_nan=False, allow_infinity=False),
+)
+def test_generated_model_invariants(dimensions, seed, energy):
+    model = GammaIrradiationModel(dimensions=dimensions, seed_init=seed, seed_sim=seed + 1)
+    atom_count = len(model.atoms)
+
+    model.step(forced_energy=energy)
+
+    assert len(model.atoms) == atom_count
+    assert len(model._occupied) == atom_count
+    assert len(set(model._occupied.values())) == atom_count

@@ -35,12 +35,25 @@ type Event = {
   energy_ev: number;
   event_type: string;
   target_atom_id: number;
+  cascade?: CascadeBranch[];
+};
+type CascadeBranch = {
+  sequence: number;
+  parent_sequence: number | null;
+  status: "committed" | "conflict_cancelled" | "dissipated";
+  atom_id?: number;
+  source_site: Site;
+  destination_site?: Site;
+  energy_ev: number;
+  child_energy_ev?: number;
 };
 type Sample = { act: number; entropy: number; defects: number };
 type Outcome = {
   event_type: string;
   probability: number;
   destinations: string[];
+  active?: boolean;
+  threshold_ev?: number;
 };
 type Destination = { key: string; kind: string; coordinate: number[] };
 
@@ -69,6 +82,7 @@ const defaults: Config = {
     fill_d2: 4,
     interstitial_hop: 6,
     to_surface: 12,
+    interstitial_swap: 15,
     replacement_knock: 45,
     surface_hop: 3,
     surface_return_d1: 6,
@@ -78,22 +92,27 @@ const defaults: Config = {
     replacement_return: 20,
   },
   weights: {
-    shift: 1,
+    shift: 0.7,
     frenkel_create: 0.2,
-    knock: 0,
-    swap: 0,
-    surface_out: 0.01,
+    knock: 0.08,
+    swap: 0.02,
+    surface_shift: 0.65,
+    surface_frenkel_create: 0.2,
+    surface_knock: 0.1,
+    surface_swap: 0.03,
+    surface_out: 0.02,
     recombine_d1: 0.9,
     fill_d2: 0.3,
     interstitial_hop: 1,
     to_surface: 0.01,
-    replacement_knock: 0,
+    interstitial_swap: 0.05,
+    replacement_knock: 0.05,
     surface_hop: 1,
     surface_return_d1: 0.4,
     surface_fill_d2: 0.2,
-    surface_push: 0,
+    surface_push: 0.1,
     to_interstitial: 0.2,
-    replacement_return: 0,
+    replacement_return: 0.05,
   },
 };
 const thresholdGroups = [
@@ -118,6 +137,7 @@ const thresholdGroups = [
       "fill_d2",
       "interstitial_hop",
       "to_surface",
+      "interstitial_swap",
       "replacement_knock",
     ],
   },
@@ -147,6 +167,7 @@ const thresholdLabels: Record<string, string> = {
   fill_d2: "Заполнение d=2",
   interstitial_hop: "Межузельный переход",
   to_surface: "Переход к поверхности",
+  interstitial_swap: "Обмен с узлом",
   replacement_knock: "Замещающее выбивание",
   surface_hop: "Поверхностный переход",
   surface_return_d1: "Возврат d=1",
@@ -194,12 +215,15 @@ function Chart({
   color: string;
 }) {
   const values = data.map((x) => x[field]);
-  const max = Math.max(1, ...values);
+  const max =
+    field === "defects"
+      ? Math.max(2, Math.ceil(Math.max(...values)))
+      : Math.max(1, ...values);
   const mid = Math.floor((data.length - 1) / 2);
   const p = (v: number, i: number) =>
     `${15 + (i / Math.max(1, values.length - 1)) * 103},${88 - (v / max) * 72}`;
   const label = (v: number) =>
-    field === "entropy" ? v.toFixed(2) : v.toFixed(0);
+    field === "entropy" ? v.toFixed(2) : Number.isInteger(v) ? String(v) : v.toFixed(1);
   return (
     <article className="chart">
       <div className="chart-title">
@@ -210,34 +234,32 @@ function Chart({
             : (values.at(-1) ?? 0)}
         </strong>
       </div>
-      <svg viewBox="0 0 120 108" preserveAspectRatio="none">
-        <path d="M15 16H118M15 52H118M15 88H118" className="chart-grid" />
-        <text x="0" y="18">
-          {label(max)}
-        </text>
-        <text x="0" y="54">
-          {label(max / 2)}
-        </text>
-        <text x="5" y="90">
-          0
-        </text>
-        <polyline
-          points={values.length < 2 ? "15,88 118,88" : values.map(p).join(" ")}
-          fill="none"
-          stroke={color}
-          strokeWidth="2.5"
-          vectorEffect="non-scaling-stroke"
-        />
-        <text x="15" y="103">
-          N={data[0]?.act ?? 0}
-        </text>
-        <text x="63" y="103" textAnchor="middle">
-          N={data[mid]?.act ?? 0}
-        </text>
-        <text x="118" y="103" textAnchor="end">
-          N={data.at(-1)?.act ?? 0}
-        </text>
-      </svg>
+      <div className="chart-plot">
+        <svg viewBox="0 0 120 108" preserveAspectRatio="none" aria-hidden="true">
+          <path d="M15 16H118M15 52H118M15 88H118" className="chart-grid" />
+          <polyline
+            points={values.length < 2 ? "15,88 118,88" : values.map(p).join(" ")}
+            fill="none"
+            stroke={color}
+            strokeWidth="2.5"
+            vectorEffect="non-scaling-stroke"
+          />
+        </svg>
+        <span className="chart-y chart-y-max">{label(max)}</span>
+        <span className="chart-y chart-y-mid">{label(max / 2)}</span>
+        <span className="chart-y chart-y-zero">0</span>
+        <div className="chart-x">
+          {data.length < 2 ? (
+            <span className="chart-x-single">N={data[0]?.act ?? 0}</span>
+          ) : (
+            <>
+              <span>N={data[0]?.act ?? 0}</span>
+              <span>N={data[mid]?.act ?? 0}</span>
+              <span>N={data.at(-1)?.act ?? 0}</span>
+            </>
+          )}
+        </div>
+      </div>
     </article>
   );
 }
@@ -248,12 +270,14 @@ function Lattice2D({
   choose,
   editMode,
   moveAtom,
+  cascade,
 }: {
   snapshot: Snapshot;
   selected: number | null;
   choose: (id: number) => void;
   editMode: boolean;
   moveAtom: (atomId: number, coordinate: number[]) => void;
+  cascade?: CascadeBranch[];
 }) {
   const ref = useRef<HTMLCanvasElement>(null);
   const drag = useRef<{ atomId: number; x: number; y: number } | null>(null);
@@ -320,7 +344,47 @@ function Lattice2D({
       );
       ctx.fill();
     }
-  }, [snapshot, selected]);
+    for (const branch of cascade ?? []) {
+      const [sx, sy] = branch.source_site.coordinate;
+      const sourceX = view.ox + sx * view.step;
+      const sourceY = view.oy + sy * view.step;
+      const color =
+        branch.status === "committed"
+          ? "#f7d654"
+          : branch.status === "conflict_cancelled"
+            ? "#e45d74"
+            : "#a5b4c9";
+      ctx.strokeStyle = color;
+      ctx.fillStyle = color;
+      ctx.lineWidth = 2.5;
+      if (branch.destination_site) {
+        const [dx, dy] = branch.destination_site.coordinate;
+        const destinationX = view.ox + dx * view.step;
+        const destinationY = view.oy + dy * view.step;
+        const angle = Math.atan2(destinationY - sourceY, destinationX - sourceX);
+        ctx.beginPath();
+        ctx.moveTo(sourceX, sourceY);
+        ctx.lineTo(destinationX, destinationY);
+        ctx.stroke();
+        ctx.beginPath();
+        ctx.moveTo(destinationX, destinationY);
+        ctx.lineTo(
+          destinationX - 8 * Math.cos(angle - Math.PI / 6),
+          destinationY - 8 * Math.sin(angle - Math.PI / 6),
+        );
+        ctx.lineTo(
+          destinationX - 8 * Math.cos(angle + Math.PI / 6),
+          destinationY - 8 * Math.sin(angle + Math.PI / 6),
+        );
+        ctx.closePath();
+        ctx.fill();
+      } else {
+        ctx.beginPath();
+        ctx.arc(sourceX, sourceY, 7, 0, Math.PI * 2);
+        ctx.stroke();
+      }
+    }
+  }, [snapshot, selected, cascade]);
   const hitAtom = (event: ReactMouseEvent<HTMLCanvasElement>) => {
     const view = project();
     if (!view) return null;
@@ -513,6 +577,7 @@ function App() {
   const [config, setConfig] = useState<Config>(defaults);
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null);
   const [events, setEvents] = useState<Event[]>([]);
+  const [cascadeEvent, setCascadeEvent] = useState<Event | null>(null);
   const [history, setHistory] = useState<Sample[]>([]);
   const [selected, setSelected] = useState<number | null>(null);
   const [mouseMode, setMouseMode] = useState<"view" | "probability" | "edit">(
@@ -557,6 +622,7 @@ function App() {
       setSimulation("paused");
       setElapsed(0);
       setEvents([]);
+      setCascadeEvent(null);
       setSelected(null);
       const next = await api<Snapshot>("/api/model", {
         ...config,
@@ -577,6 +643,7 @@ function App() {
   const step = async () => {
     const event = await api<Event>("/api/model/step", {});
     setEvents((old) => [event, ...old].slice(0, 200));
+    if (event.cascade?.length) setCascadeEvent(event);
     setSelected(event.target_atom_id);
     commit(await api<Snapshot>("/api/model/snapshot"), true);
   };
@@ -958,6 +1025,7 @@ function App() {
               choose={choose}
               editMode={mouseMode === "edit"}
               moveAtom={moveFromDrop}
+              cascade={cascadeEvent?.cascade}
             />
           ) : (
             <Lattice3D
@@ -1052,9 +1120,13 @@ function App() {
               />
             </label>
             {outcomes.map((x, i) => (
-              <div key={`${x.event_type}-${i}`}>
-                <strong>{x.event_type}</strong>
+              <div
+                key={`${x.event_type}-${i}`}
+                className={x.active === false ? "inactive-outcome" : ""}
+              >
+                <strong>{thresholdLabels[x.event_type] ?? x.event_type}</strong>
                 <span>{(x.probability * 100).toFixed(1)}%</span>
+                {x.active === false && <small>Порог: {x.threshold_ev} эВ</small>}
                 <small>{x.destinations.join(" → ")}</small>
               </div>
             ))}
@@ -1069,6 +1141,28 @@ function App() {
             ))}
           </div>
         )}
+        {cascadeEvent && (
+          <section className="cascade-trace" aria-live="polite">
+            <h2>Каскад акта #{cascadeEvent.act}</h2>
+            <p>
+              {cascadeEvent.cascade?.filter((branch) => branch.status === "committed").length ?? 0}
+              {" "}ветвей применено
+            </p>
+            <div>
+              {cascadeEvent.cascade?.map((branch) => (
+                <article key={branch.sequence} className={`cascade-${branch.status}`}>
+                  <strong>#{branch.sequence} · {branch.status}</strong>
+                  <small>Q {branch.energy_ev.toFixed(1)} eV</small>
+                  {branch.destination_site && (
+                    <small>
+                      {branch.source_site.key} → {branch.destination_site.key}
+                    </small>
+                  )}
+                </article>
+              ))}
+            </div>
+          </section>
+        )}
         <h2>Журнал актов</h2>
         <div className="journal-list">
           {events.length ? (
@@ -1076,7 +1170,10 @@ function App() {
               <button
                 className={`event ${selected === event.target_atom_id ? "active" : ""}`}
                 key={event.revision}
-                onClick={() => choose(event.target_atom_id)}
+                onClick={() => {
+                  if (event.cascade?.length) setCascadeEvent(event);
+                  choose(event.target_atom_id);
+                }}
               >
                 <strong>
                   #{event.act} {event.event_type}

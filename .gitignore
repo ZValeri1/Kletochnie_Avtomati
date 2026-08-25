@@ -1,6 +1,7 @@
 .venv/
 __pycache__/
 *.py[cod]
+.hypothesis/
 frontend/node_modules/
 frontend/dist/
 node_modules/

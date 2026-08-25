@@ -49,16 +49,18 @@ class GammaIrradiationModel:
         "surface_shift": 9.0, "surface_swap": 20.0, "surface_frenkel_create": 30.0,
         "surface_knock": 37.5, "surface_out": 60.0, "recombine_d1": 4.0,
         "fill_d2": 4.0, "interstitial_hop": 6.0, "to_surface": 12.0,
-        "replacement_knock": 45.0, "surface_hop": 3.0, "surface_return_d1": 6.0,
+        "interstitial_swap": 15.0, "replacement_knock": 45.0, "surface_hop": 3.0, "surface_return_d1": 6.0,
         "surface_fill_d2": 8.0, "surface_push": 10.0, "to_interstitial": 18.0,
         "replacement_return": 20.0,
     }
     DEFAULT_WEIGHTS = {
-        "shift": 1.0, "frenkel_create": 0.2, "knock": 0.0, "swap": 0.0,
-        "surface_out": 0.01, "recombine_d1": 0.9, "fill_d2": 0.3,
-        "interstitial_hop": 1.0, "to_surface": 0.01, "replacement_knock": 0.0,
-        "surface_hop": 1.0, "surface_return_d1": 0.4, "surface_fill_d2": 0.2,
-        "surface_push": 0.0, "to_interstitial": 0.2, "replacement_return": 0.0,
+        "shift": 0.70, "frenkel_create": 0.20, "knock": 0.08, "swap": 0.02,
+        "surface_shift": 0.65, "surface_frenkel_create": 0.20, "surface_knock": 0.10,
+        "surface_swap": 0.03, "surface_out": 0.02, "recombine_d1": 0.90,
+        "fill_d2": 0.30, "interstitial_hop": 1.0, "to_surface": 0.01,
+        "interstitial_swap": 0.05, "replacement_knock": 0.05, "surface_hop": 1.0,
+        "surface_return_d1": 0.40, "surface_fill_d2": 0.20, "surface_push": 0.10,
+        "to_interstitial": 0.20, "replacement_return": 0.05,
     }
 
     def __init__(
@@ -78,6 +80,8 @@ class GammaIrradiationModel:
     ) -> None:
         if len(dimensions) not in (2, 3) or any(size < 2 for size in dimensions):
             raise ValueError("dimensions must have two or three axes with at least two nodes")
+        if profile not in {"fe_co60_physical", "cascade_test"}:
+            raise ValueError("profile must be fe_co60_physical or cascade_test")
         self.dimensions = dimensions
         self.profile = profile
         self.seed_init = seed_init
@@ -389,6 +393,12 @@ class GammaIrradiationModel:
     def direction_multiplier(cosine: float) -> float:
         return 0.5 + 0.35 * cosine + 0.15 * cosine * cosine
 
+    def _direction_weight(self, source: Site, destination: Site) -> float:
+        """Bias a legal move along the model beam direction (+X)."""
+        delta = [right - left for left, right in zip(source.coordinate, destination.coordinate)]
+        length = math.sqrt(sum(value * value for value in delta))
+        return self.direction_multiplier(delta[0] / length) if length else 0.5
+
     def _candidate_groups(self, atom_id: int) -> dict[str, list[EventCandidate]]:
         atom = self.atoms[atom_id]
         site = self.sites[atom.site_key]
@@ -414,6 +424,11 @@ class GammaIrradiationModel:
                 groups[f"{prefix}frenkel_create"].append(
                     EventCandidate(f"{prefix}frenkel_create", destination)
                 )
+                groups[f"{prefix}knock"].append(EventCandidate(f"{prefix}knock", destination))
+            for destination, partner_id in occupied_neighbours("lattice"):
+                groups[f"{prefix}swap"].append(
+                    EventCandidate(f"{prefix}swap", destination, partner_id)
+                )
             if state == "surface":
                 for destination in free_neighbours("bridge") + free_neighbours("hollow"):
                     groups["surface_out"].append(EventCandidate("surface_out", destination))
@@ -423,7 +438,9 @@ class GammaIrradiationModel:
             for destination in free_neighbours("interstitial"):
                 groups["interstitial_hop"].append(EventCandidate("interstitial_hop", destination))
             for destination, partner_id in occupied_neighbours("lattice"):
-                groups["swap"].append(EventCandidate("swap", destination, partner_id))
+                groups["interstitial_swap"].append(
+                    EventCandidate("interstitial_swap", destination, partner_id)
+                )
                 groups["replacement_knock"].append(
                     EventCandidate("replacement_knock", destination, partner_id)
                 )
@@ -447,7 +464,19 @@ class GammaIrradiationModel:
                     groups["surface_fill_d2"].append(EventCandidate("surface_fill_d2", destination))
             for destination in self._unit_distance_free_sites("interstitial", site):
                 groups["to_interstitial"].append(EventCandidate("to_interstitial", destination))
-        return groups
+                groups["surface_knock"].append(EventCandidate("surface_knock", destination))
+        return {
+            event_type: [
+                EventCandidate(
+                    candidate.event_type,
+                    candidate.destination_key,
+                    candidate.partner_id,
+                    self._direction_weight(site, self.sites[candidate.destination_key]),
+                )
+                for candidate in candidates
+            ]
+            for event_type, candidates in groups.items()
+        }
 
     def _unit_distance_free_surface_sites(self, source: Site) -> list[str]:
         free = [
@@ -486,6 +515,8 @@ class GammaIrradiationModel:
             if not local:
                 return {"recombine_d1": 1.0}
             local_sum = sum(self.weights.get(key, 1.0) for key in local)
+            if local_sum <= 0:
+                return {"recombine_d1": 1.0}
             return {
                 "recombine_d1": 0.9,
                 **{key: 0.1 * self.weights.get(key, 1.0) / local_sum for key in local},
@@ -498,6 +529,8 @@ class GammaIrradiationModel:
                 if not local:
                     return {reserved: 1.0}
                 local_sum = sum(self.weights.get(key, 1.0) for key in local)
+                if local_sum <= 0:
+                    return {reserved: 1.0}
                 return {reserved: mass, **{key: (1 - mass) * self.weights.get(key, 1.0) / local_sum for key in local}}
         raw = {
             key: self.weights.get(key, self.weights.get(key.removeprefix("surface_"), 1.0))
@@ -516,8 +549,11 @@ class GammaIrradiationModel:
         type_weights = self._event_type_weights(atom_id, energy)
         groups = self._candidate_groups(atom_id)
         outcomes: list[dict] = []
-        for event_type, type_weight in type_weights.items():
-            candidates = groups[event_type]
+        for event_type, candidates in groups.items():
+            type_weight = type_weights.get(event_type, 0.0)
+            threshold_ev = self.thresholds.get(event_type, math.inf)
+            if not candidates:
+                continue
             local_total = sum(candidate.direction_weight for candidate in candidates)
             for candidate in candidates:
                 outcomes.append(
@@ -525,9 +561,16 @@ class GammaIrradiationModel:
                         "event_type": event_type,
                         "probability": type_weight * candidate.direction_weight / local_total,
                         "destinations": [candidate.destination_key],
+                        "active": event_type in type_weights,
+                        "threshold_ev": threshold_ev,
                     }
                 )
-        return outcomes or [{"event_type": "no_change", "probability": 1.0, "destinations": []}]
+        if type_weights:
+            return outcomes
+        return [
+            {"event_type": "no_change", "probability": 1.0, "destinations": [], "active": True},
+            *outcomes,
+        ]
 
     def _choose_weighted(self, values: list[tuple[object, float]]) -> object:
         point = self._sim_rng.random() * sum(weight for _, weight in values)
@@ -561,10 +604,10 @@ class GammaIrradiationModel:
         self._occupied[source_key] = candidate.partner_id
         return [candidate.destination_key, source_key]
 
-    def _cascade_candidates(self, origin_key: str) -> list[tuple[int, str]]:
+    def _cascade_candidates(self, origin_key: str) -> list[tuple[int, str, float, str]]:
         """Return forward-only atom displacements seeded from one cascade branch."""
         origin = self.sites[origin_key]
-        options: list[tuple[int, str]] = []
+        options: list[tuple[int, str, float, str]] = []
         for support_key in self.neighbors(origin_key):
             if self.sites[support_key].kind != "lattice" or support_key not in self._occupied:
                 continue
@@ -576,41 +619,76 @@ class GammaIrradiationModel:
                 # The model flow direction is +X; reverse cascade branches are not valid.
                 if destination.coordinate[0] < origin.coordinate[0]:
                     continue
-                options.append((atom_id, destination_key))
+                options.append((
+                    atom_id,
+                    destination_key,
+                    self._direction_weight(origin, destination),
+                    support_key,
+                ))
         return options
+
+    def _dirichlet_shares(self, count: int, concentration: float = 4.0) -> list[float]:
+        """Sample positive energy shares which sum to one without NumPy state."""
+        draws = [self._sim_rng.gammavariate(concentration, 1.0) for _ in range(count)]
+        total = sum(draws)
+        return [draw / total for draw in draws]
 
     def _process_cascade(self, origin_key: str, available_energy: float) -> list[dict]:
         if available_energy <= 0:
             return []
-        queue: list[tuple[float, int, str, float]] = [(-available_energy, 0, origin_key, available_energy)]
+        queue: list[tuple[float, int, str, float, int | None]] = [
+            (-available_energy, 0, origin_key, available_energy, None)
+        ]
         sequence = 1
         records: list[dict] = []
         while queue and len(records) < 64:
-            _, _, source_key, branch_energy = heapq.heappop(queue)
+            _, branch_sequence, source_key, branch_energy, parent_sequence = heapq.heappop(queue)
             options = self._cascade_candidates(source_key)
             if branch_energy < 12 or not options:
-                records.append({"status": "dissipated", "source": source_key, "energy_ev": branch_energy})
+                records.append({
+                    "sequence": branch_sequence,
+                    "parent_sequence": parent_sequence,
+                    "status": "dissipated",
+                    "source": source_key,
+                    "source_site": self._site_payload(self.sites[source_key]),
+                    "energy_ev": branch_energy,
+                })
                 continue
-            atom_id, destination_key = self._choose_weighted([(item, 1.0) for item in options])
-            if atom_id not in self.atoms or destination_key in self._occupied:
-                records.append({"status": "conflict_cancelled", "source": source_key, "energy_ev": branch_energy})
-                continue
-            self._relocate(atom_id, destination_key)
             remaining = max(0.0, branch_energy - 12.0)
-            child_energy = remaining * 0.5
-            records.append(
-                {
+            branch_count = min(len(options), 4)
+            selected = self._sim_rng.sample(options, branch_count)
+            shares = self._dirichlet_shares(branch_count)
+            for (atom_id, destination_key, _, source_atom_site), share in zip(selected, shares):
+                child_energy = remaining * share
+                record = {
+                    "sequence": sequence,
+                    "parent_sequence": branch_sequence,
                     "status": "committed",
                     "atom_id": atom_id,
                     "source": source_key,
+                    "source_site": self._site_payload(self.sites[source_key]),
                     "destination": destination_key,
+                    "destination_site": self._site_payload(self.sites[destination_key]),
                     "energy_ev": branch_energy,
                     "child_energy_ev": child_energy,
                 }
-            )
-            if child_energy > 0:
-                heapq.heappush(queue, (-child_energy, sequence, destination_key, child_energy))
                 sequence += 1
+                if (
+                    atom_id not in self.atoms
+                    or self.atoms[atom_id].site_key != source_atom_site
+                    or destination_key in self._occupied
+                ):
+                    record["status"] = "conflict_cancelled"
+                    records.append(record)
+                    continue
+                self._relocate(atom_id, destination_key)
+                records.append(record)
+                if child_energy > 0:
+                    heapq.heappush(
+                        queue,
+                        (-child_energy, sequence, destination_key, child_energy, record["sequence"]),
+                    )
+                    sequence += 1
         return records
 
     def step(self, forced_energy: float | None = None) -> dict:
@@ -636,7 +714,11 @@ class GammaIrradiationModel:
             "event_type": event_type,
             "destinations": destinations,
             "cascade": cascade,
-            "deltas": {"atom_ids": [target_id] + ([candidate.partner_id] if candidate and candidate.partner_id is not None else [])},
+            "deltas": {
+                "atom_ids": [target_id]
+                + ([candidate.partner_id] if candidate and candidate.partner_id is not None else [])
+                + [item["atom_id"] for item in cascade if item.get("status") == "committed"],
+            },
             "metrics": self.metrics(),
         }
         self.events.append(event)
