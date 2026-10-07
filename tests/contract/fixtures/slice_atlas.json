@@ -1,0 +1,21 @@
+{
+  "schema_version": 1,
+  "simulation_id": "sim-3d",
+  "revision": 4,
+  "axis": "z",
+  "slices": [
+    {
+      "coordinate": 0.0,
+      "sites": [
+        {
+          "site_key": "lattice:0,0,0",
+          "coordinate": [0.0, 0.0, 0.0],
+          "site_kind": "lattice",
+          "metal_relation": "boundary",
+          "atom_id": 0,
+          "visual_state": "boundary"
+        }
+      ]
+    }
+  ]
+}

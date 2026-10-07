@@ -1,0 +1,9 @@
+{
+  "schema_version": 1,
+  "project_id": "project-a",
+  "status": "AVAILABLE",
+  "simulation_count": 2,
+  "created_at": "2026-09-27T12:00:00+00:00",
+  "updated_at": "2026-09-27T12:30:00+00:00",
+  "history_truncated": false
+}

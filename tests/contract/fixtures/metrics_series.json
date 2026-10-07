@@ -1,0 +1,9 @@
+{
+  "schema_version": 1,
+  "simulation_id": "sim-a",
+  "revision": 3,
+  "points": [
+    {"revision": 0, "act_number": 0, "origin": "initialization", "n_correct": 16, "n_v": 0, "n_i": 0, "n_as": 0, "d": 0, "s": 0.0},
+    {"revision": 3, "act_number": 2, "origin": "physical_act", "n_correct": 15, "n_v": 1, "n_i": 1, "n_as": 0, "d": 2, "s": 0.125}
+  ]
+}

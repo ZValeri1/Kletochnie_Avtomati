@@ -1,0 +1,77 @@
+{
+  "schema_version": 1,
+  "simulation_id": "sim-a",
+  "revision": 3,
+  "status": "PAUSED",
+  "phase": "SIMULATION",
+  "config_locked": true,
+  "dimensions": [12, 12],
+  "configuration": {
+    "dimensions": [4, 4],
+    "field_dimensions": [12, 12],
+    "contour": null,
+    "profile": "fe_co60_physical",
+    "initialization_mode": "ordered",
+    "n_v": 0,
+    "n_i": 0,
+    "n_as": 0,
+    "random_parameters": {},
+    "seed_init": 11,
+    "seed_sim": 12,
+    "q_max_ev": 82.0,
+    "q_thr_ev": 20.0,
+    "weights": {
+      "lattice_vacancy": 0.7,
+      "lattice_interstitial": 0.2,
+      "interstitial_vacancy_r1": 0.9,
+      "interstitial_vacancy_r2": 0.3,
+      "interstitial_interstitial": 1.0,
+      "boundary_external": 0.02,
+      "external_external": 1.0,
+      "external_interstitial": 0.2,
+      "interstitial_external": 1.0,
+      "external_metal": 0.0,
+      "shell_r1": 0.75,
+      "shell_r2": 0.25,
+      "vacancy": 0.8,
+      "interstitial": 0.2,
+      "external": 0.05
+    }
+  },
+  "atoms": [
+    {
+      "id": 0,
+      "site_key": "lattice:0,0",
+      "coordinate": [0.0, 0.0],
+      "site_kind": "lattice",
+      "metal_relation": "boundary",
+      "visual_state": "boundary"
+    },
+    {
+      "id": 1,
+      "site_key": "lattice:1,0",
+      "coordinate": [1.0, 0.0],
+      "site_kind": "lattice",
+      "metal_relation": "boundary",
+      "visual_state": "boundary"
+    }
+  ],
+  "vacancies": [],
+  "counts": {"n0": 16, "n_atoms": 16, "n_v": 0, "n_i": 0, "n_as": 0},
+  "metrics": {
+    "n_correct": 16,
+    "n_v": 0,
+    "n_i": 0,
+    "n_as": 0,
+    "d": 0,
+    "s": 0.0
+  },
+  "history_capabilities": {
+    "can_undo": true,
+    "can_redo": false,
+    "retained_action_count": 3,
+    "history_limit": 100,
+    "history_truncated": false
+  },
+  "error": null
+}

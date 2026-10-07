@@ -1,0 +1,10 @@
+{
+  "schema_version": 1,
+  "code": "REVISION_CONFLICT",
+  "message": "Expected revision 2, actual revision 3",
+  "simulation_id": "sim-a",
+  "command_id": null,
+  "revision": 3,
+  "recoverable": false,
+  "details": {"expected_revision": 2, "actual_revision": 3}
+}

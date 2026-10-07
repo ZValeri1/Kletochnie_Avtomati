@@ -1,6 +1,5 @@
 packages:
-  - frontend
-allowBuilds:
-  esbuild: set this to true or false
+  - .
+  - tests
 onlyBuiltDependencies:
   - esbuild

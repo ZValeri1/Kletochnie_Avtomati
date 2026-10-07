@@ -1,0 +1,50 @@
+{
+  "schema_version": 1,
+  "simulation_id": "sim-a",
+  "revision": 3,
+  "atom_id": 1,
+  "q_test": 30.0,
+  "q_thr": 20.0,
+  "outcomes": [
+    {
+      "source_site": "lattice:5,5",
+      "source_coordinate": [5.0, 5.0],
+      "source_kind": "lattice",
+      "destination_site": "lattice:6,5",
+      "destination_coordinate": [6.0, 5.0],
+      "destination_kind": "lattice",
+      "destination_relation": "interior",
+      "operation": "lattice_vacancy",
+      "shell": 1,
+      "operation_weight": 0.7,
+      "shell_weight": 0.75,
+      "position_weight": 1.0,
+      "total_weight": 0.525,
+      "probability": 1.0,
+      "selectable": true,
+      "block_code": null,
+      "q_test": 30.0,
+      "q_thr": 20.0
+    },
+    {
+      "source_site": "lattice:5,5",
+      "source_coordinate": [5.0, 5.0],
+      "source_kind": "lattice",
+      "destination_site": "lattice:7,5",
+      "destination_coordinate": [7.0, 5.0],
+      "destination_kind": "lattice",
+      "destination_relation": "interior",
+      "operation": "lattice_vacancy",
+      "shell": 2,
+      "operation_weight": 0.7,
+      "shell_weight": 0.25,
+      "position_weight": 1.0,
+      "total_weight": 0.175,
+      "probability": 0.0,
+      "selectable": false,
+      "block_code": "PATH_BLOCKED",
+      "q_test": 30.0,
+      "q_thr": 20.0
+    }
+  ]
+}
