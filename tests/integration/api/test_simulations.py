@@ -222,7 +222,8 @@ def test_openapi_requires_revision_for_every_concurrent_mutation(tmp_path):
         operation = schema["paths"][f"/api/simulations/{{simulation_id}}/{path_suffix}"]["post"]
         assert operation["requestBody"]["required"] is True
         body = operation["requestBody"]["content"]["application/json"]["schema"]
-        assert body["$ref"].endswith("/RevisionRequest")
+        expected_request = "RunRequest" if command == "run" else "RevisionRequest"
+        assert body["$ref"].endswith(f"/{expected_request}")
     serialized = json.dumps(schema)
     for removed in ("forced_energy", "total_dose", "defect_concentration", "moved_atoms"):
         assert removed not in serialized

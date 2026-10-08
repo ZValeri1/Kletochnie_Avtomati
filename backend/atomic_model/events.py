@@ -125,11 +125,40 @@ class EventEngine:
         "interstitial": 0.20,
         "external": 0.05,
     }
+    DEFAULT_SOURCE_PROBABILITIES = {
+        "from_lattice_vacancy": 0.80,
+        "from_lattice_interstitial": 0.20,
+        "from_lattice_shell_r1": 0.75,
+        "from_lattice_shell_r2": 0.25,
+        "from_lattice_inside": 0.95,
+        "from_lattice_outside": 0.05,
+        "from_interstitial_vacancy": 0.80,
+        "from_interstitial_interstitial": 0.20,
+        "from_interstitial_shell_r1": 0.75,
+        "from_interstitial_shell_r2": 0.25,
+        "from_interstitial_inside": 0.95,
+        "from_interstitial_outside": 0.05,
+    }
+    SOURCE_PROBABILITY_FALLBACKS = {
+        "from_lattice_vacancy": "vacancy",
+        "from_lattice_interstitial": "interstitial",
+        "from_lattice_shell_r1": "shell_r1",
+        "from_lattice_shell_r2": "shell_r2",
+        "from_lattice_inside": "external",
+        "from_lattice_outside": "external",
+        "from_interstitial_vacancy": "vacancy",
+        "from_interstitial_interstitial": "interstitial",
+        "from_interstitial_shell_r1": "shell_r1",
+        "from_interstitial_shell_r2": "shell_r2",
+        "from_interstitial_inside": "external",
+        "from_interstitial_outside": "external",
+    }
 
     def __init__(self, configuration: dict | None = None) -> None:
         configuration = configuration or {}
         self.q_thr = float(configuration.get("q_thr_ev", 20.0))
         self.weights = dict(configuration.get("weights") or {})
+        self.source_probabilities = self.effective_source_probabilities(self.weights)
 
     def probabilities(
         self,
@@ -152,8 +181,10 @@ class EventEngine:
                 # Public field names are retained for schema compatibility,
                 # but they now carry the three probability factors from the
                 # model specification rather than arbitrary weights.
-                operation_weight = self._type_probability(destination_key, topology)
-                shell_weight = self._shell_weight(shell)
+                operation_weight = self._type_probability(
+                    source_key, destination_key, topology
+                )
+                shell_weight = self._shell_probability(source_key, shell, topology)
                 position_weight = self._relation_probability(
                     source_key, destination_key, topology
                 )
@@ -289,7 +320,7 @@ class EventEngine:
             return "BELOW_THRESHOLD"
         if total_weight <= 0:
             return "ZERO_PROBABILITY"
-        trial = state.working_copy()
+        trial = state.transition_copy(include_history=False)
         try:
             trial.relocate(atom_id, destination_key)
             trial.validate(topology)
@@ -354,15 +385,54 @@ class EventEngine:
                 return "interstitial_external"
         return None
 
-    def _type_probability(self, destination_key: str, topology: Topology) -> float:
-        kind = "vacancy" if topology.sites[destination_key].kind == "lattice" else "interstitial"
-        return float(self.weights.get(kind, self.DEFAULT_POSITION_WEIGHTS[kind]))
+    @classmethod
+    def effective_source_probabilities(cls, weights: dict | None) -> dict[str, float]:
+        configured = weights or {}
+        effective = {}
+        for key, default in cls.DEFAULT_SOURCE_PROBABILITIES.items():
+            if key in configured:
+                effective[key] = float(configured[key])
+            elif key.endswith("_inside"):
+                outside_key = key.removesuffix("_inside") + "_outside"
+                if outside_key in configured:
+                    effective[key] = 1.0 - float(configured[outside_key])
+                elif "external" in configured:
+                    effective[key] = 1.0 - float(configured["external"])
+                else:
+                    effective[key] = default
+            elif key.endswith("_outside"):
+                inside_key = key.removesuffix("_outside") + "_inside"
+                if inside_key in configured:
+                    effective[key] = 1.0 - float(configured[inside_key])
+                elif "external" in configured:
+                    effective[key] = float(configured["external"])
+                else:
+                    effective[key] = default
+            else:
+                effective[key] = float(
+                    configured.get(cls.SOURCE_PROBABILITY_FALLBACKS[key], default)
+                )
+        return effective
 
-    def _shell_weight(self, shell: int) -> float:
-        return float(
-            self.weights.get(
-                f"shell_r{shell}", self.DEFAULT_SHELL_WEIGHTS[shell]
-            )
+    def _source_probability(self, key: str) -> float:
+        return self.source_probabilities[key]
+
+    def _type_probability(
+        self, source_key: str, destination_key: str, topology: Topology
+    ) -> float:
+        source_kind = topology.sites[source_key].kind
+        destination_type = (
+            "vacancy"
+            if topology.sites[destination_key].kind == "lattice"
+            else "interstitial"
+        )
+        return self._source_probability(f"from_{source_kind}_{destination_type}")
+
+    def _shell_probability(
+        self, source_key: str, shell: int, topology: Topology
+    ) -> float:
+        return self._source_probability(
+            f"from_{topology.sites[source_key].kind}_shell_r{shell}"
         )
 
     def _relation_probability(
@@ -375,7 +445,7 @@ class EventEngine:
                 self.weights.get("external_metal", self.DEFAULT_OPERATION_WEIGHTS["external_metal"])
             )
             return inside_probability if destination.metal_relation != "outside" else 1.0 - inside_probability
-        outside_probability = float(
-            self.weights.get("external", self.DEFAULT_POSITION_WEIGHTS["external"])
+        relation = (
+            "outside" if destination.metal_relation == "outside" else "inside"
         )
-        return outside_probability if destination.metal_relation == "outside" else 1.0 - outside_probability
+        return self._source_probability(f"from_{source.kind}_{relation}")

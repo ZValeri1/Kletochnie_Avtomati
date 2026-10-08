@@ -59,6 +59,8 @@ class SimulationSession:
     trajectory_initial: HistoryCheckpoint | None = None
     source_project_id: str | None = None
     source_simulation_id: str | None = None
+    run_mode: str | None = None
+    run_interval_seconds: float = 0.8
 
     def __post_init__(self) -> None:
         self.lock = asyncio.Lock()

@@ -56,6 +56,51 @@ def test_history_protects_initial_and_retains_only_the_last_100_actions():
     assert exported["checkpoints"][-1]["source_revision"] == 101
 
 
+def test_history_commit_does_not_recopy_existing_event_log_entries():
+    history_class = symbol(
+        "backend.simulation_management.history", "SimulationHistory"
+    )
+    state_class = symbol("backend.atomic_model.state", "SimulationState")
+
+    class CopyProbe:
+        copies = 0
+
+        def __deepcopy__(self, memo):
+            self.copies += 1
+            return self
+
+    old_event = CopyProbe()
+    initial = state_class(
+        atoms={1: "lattice:0,0"},
+        occupied={"lattice:0,0": 1},
+        events=[old_event],
+        metrics_points=[],
+    )
+    history = history_class(initial, random_state=("rng", 0))
+    copies_after_initial_checkpoint = old_event.copies
+    events = [old_event]
+
+    for action in range(1, 151):
+        events.append({"revision": action})
+        history.commit(
+            state=state_class(
+                atoms={1: f"lattice:{action},0"},
+                occupied={f"lattice:{action},0": 1},
+                act_number=action,
+                revision=action,
+                events=list(events),
+                metrics_points=[{"revision": action}],
+            ),
+            random_state=("rng", action),
+            source_revision=action,
+        )
+
+    assert old_event.copies == copies_after_initial_checkpoint
+    assert history.checkpoint_count <= 4
+    assert history.undo().state.act_number == 149
+    assert history.redo().state.act_number == 150
+
+
 def test_session_exposes_the_complete_p4_command_matrix():
     session_class = symbol(
         "backend.simulation_management.session", "SimulationSession"

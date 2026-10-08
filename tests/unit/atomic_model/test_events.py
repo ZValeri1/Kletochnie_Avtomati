@@ -3,7 +3,7 @@ import math
 import pytest
 
 from backend.atomic_model.engine import SimulationEngine
-from backend.atomic_model.events import RandomSource
+from backend.atomic_model.events import EventEngine, RandomSource
 
 
 class ScriptedRandom:
@@ -148,6 +148,24 @@ def test_activated_act_selects_at_most_one_outcome_and_records_full_event():
         {"weights": {"external_metal": 1.01}},
         {"weights": {"vacancy": 0.7, "interstitial": 0.2}},
         {"weights": {"shell_r1": 0.7, "shell_r2": 0.2}},
+        {
+            "weights": {
+                "from_lattice_vacancy": 0.7,
+                "from_lattice_interstitial": 0.2,
+            }
+        },
+        {
+            "weights": {
+                "from_interstitial_shell_r1": 0.7,
+                "from_interstitial_shell_r2": 0.2,
+            }
+        },
+        {
+            "weights": {
+                "from_lattice_inside": 0.8,
+                "from_lattice_outside": 0.1,
+            }
+        },
     ],
 )
 def test_invalid_probability_configuration_is_rejected(configuration):
@@ -162,6 +180,60 @@ def test_invalid_probability_configuration_is_rejected(configuration):
             },
             RandomSource(12),
         )
+
+
+def test_a_saved_source_outside_probability_derives_its_inside_complement():
+    effective = EventEngine.effective_source_probabilities(
+        {"from_interstitial_outside": 0.2}
+    )
+
+    assert effective["from_interstitial_inside"] == 0.8
+    assert effective["from_interstitial_outside"] == 0.2
+
+
+def test_steps_reuse_the_immutable_topology_for_the_same_configuration():
+    engine = SimulationEngine()
+    random_source = RandomSource(32)
+    initial = engine.create_initial_state(
+        {
+            "dimensions": [5, 5],
+            "seed_init": 31,
+            "seed_sim": 32,
+            "q_max_ev": 0,
+        },
+        random_source,
+    )
+
+    stepped = engine.step(initial.state, random_source)
+
+    assert stepped.topology is initial.topology
+
+
+def test_physical_step_does_not_copy_immutable_historical_payloads():
+    class ImmutableHistoricalPayload(dict):
+        def __deepcopy__(self, memo):
+            raise AssertionError("historical payload must not be copied by a physical step")
+
+    engine = SimulationEngine()
+    random_source = RandomSource(32)
+    initial = engine.create_initial_state(
+        {
+            "dimensions": [5, 5],
+            "seed_init": 31,
+            "seed_sim": 32,
+            "q_max_ev": 0,
+        },
+        random_source,
+    )
+    initial.state.events.append(ImmutableHistoricalPayload())
+    initial.state.metrics_points.append(ImmutableHistoricalPayload())
+
+    stepped = engine.step(initial.state, random_source)
+
+    assert stepped.state.events[0] is initial.state.events[0]
+    assert stepped.state.metrics_points[-2] is initial.state.metrics_points[-1]
+    assert len(stepped.state.events) == len(initial.state.events) + 1
+    assert len(stepped.state.metrics_points) == len(initial.state.metrics_points) + 1
 
 
 def test_each_available_position_uses_its_group_probability_divided_by_n():
@@ -212,6 +284,91 @@ def test_each_available_position_uses_its_group_probability_divided_by_n():
             * outcome.shell_weight
             * outcome.position_weight
             / len(group),
+        )
+
+
+def test_lattice_and_interstitial_sources_use_independent_probability_groups():
+    from backend.atomic_model.event_executor import EventExecutor
+    from backend.atomic_model.events import EventCandidate
+
+    engine = SimulationEngine()
+    initial = engine.create_initial_state(
+        {
+            "dimensions": [5, 5],
+            "seed_init": 31,
+            "seed_sim": 32,
+            "q_max_ev": 40,
+            "q_thr_ev": 20,
+            "weights": {
+                "from_lattice_vacancy": 0.60,
+                "from_lattice_interstitial": 0.40,
+                "from_lattice_shell_r1": 0.55,
+                "from_lattice_shell_r2": 0.45,
+                "from_lattice_inside": 0.90,
+                "from_lattice_outside": 0.10,
+                "from_interstitial_vacancy": 0.30,
+                "from_interstitial_interstitial": 0.70,
+                "from_interstitial_shell_r1": 0.25,
+                "from_interstitial_shell_r2": 0.75,
+                "from_interstitial_inside": 0.80,
+                "from_interstitial_outside": 0.20,
+            },
+        },
+        RandomSource(32),
+    )
+    topology = initial.topology
+    lattice_atom_id = next(
+        atom_id
+        for atom_id, key in initial.state.atoms.items()
+        if topology.sites[key].metal_relation == "interior"
+    )
+    lattice_outcomes = engine.probabilities(initial.state, lattice_atom_id, 30)
+
+    for outcome in lattice_outcomes:
+        assert outcome.operation_weight == {
+            "lattice": 0.60,
+            "interstitial": 0.40,
+        }[outcome.destination_kind]
+        assert outcome.shell_weight == {1: 0.55, 2: 0.45}[outcome.shell]
+        assert outcome.position_weight == (
+            0.10 if outcome.destination_relation == "outside" else 0.90
+        )
+
+    frenkel = next(
+        outcome
+        for outcome in lattice_outcomes
+        if outcome.selectable and outcome.operation == "lattice_interstitial"
+    )
+    interstitial_state = EventExecutor().execute(
+        topology,
+        initial.state,
+        EventCandidate(
+            frenkel.operation,
+            lattice_atom_id,
+            frenkel.source_site,
+            frenkel.destination_site,
+            frenkel.shell,
+            frenkel.operation_weight,
+            frenkel.shell_weight,
+            frenkel.position_weight,
+            frenkel.total_weight,
+            frenkel.probability,
+        ),
+    ).state
+    interstitial_outcomes = engine.probabilities(
+        interstitial_state, lattice_atom_id, 30
+    )
+
+    assert interstitial_outcomes
+    assert all(outcome.source_kind == "interstitial" for outcome in interstitial_outcomes)
+    for outcome in interstitial_outcomes:
+        assert outcome.operation_weight == {
+            "lattice": 0.30,
+            "interstitial": 0.70,
+        }[outcome.destination_kind]
+        assert outcome.shell_weight == {1: 0.25, 2: 0.75}[outcome.shell]
+        assert outcome.position_weight == (
+            0.20 if outcome.destination_relation == "outside" else 0.80
         )
 
 

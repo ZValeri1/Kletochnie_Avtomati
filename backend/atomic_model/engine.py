@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import secrets
 from dataclasses import dataclass
+from functools import lru_cache
 
 from backend.atomic_model.errors import InvalidEventError, StateInvariantError, TopologyError
 from backend.atomic_model.event_executor import EventExecutor
@@ -74,7 +75,7 @@ class SimulationEngine:
             q_thr = source.configuration["q_thr_ev"]
             event_engine = EventEngine(source.configuration)
             if q_n < q_thr:
-                state = source.working_copy()
+                state = source.transition_copy()
                 state.act_number += 1
                 state.revision += 1
                 candidate = None
@@ -85,7 +86,7 @@ class SimulationEngine:
                 )
                 candidate = event_engine.choose(outcomes, atom_id, random_source)
                 if candidate is None:
-                    state = source.working_copy()
+                    state = source.transition_copy()
                     state.act_number += 1
                     state.revision += 1
                     reason = "NO_POSITIVE_CANDIDATE"
@@ -276,9 +277,21 @@ class SimulationEngine:
 
     @staticmethod
     def _topology(configuration: dict) -> Topology:
-        return Topology.create(
-            tuple(configuration["dimensions"]), contour=configuration.get("contour")
+        contour = configuration.get("contour")
+        normalized_contour = (
+            tuple(tuple(point) for point in contour) if contour is not None else None
         )
+        return SimulationEngine._cached_topology(
+            tuple(configuration["dimensions"]), normalized_contour
+        )
+
+    @staticmethod
+    @lru_cache(maxsize=128)
+    def _cached_topology(
+        dimensions: tuple[int, ...],
+        contour: tuple[tuple[int, int], ...] | None,
+    ) -> Topology:
+        return Topology.create(dimensions, contour=contour)
 
     @staticmethod
     def _validated_configuration(configuration: dict) -> dict:
@@ -315,6 +328,7 @@ class SimulationEngine:
             "shell_r1",
             "shell_r2",
             *EventEngine.DEFAULT_POSITION_WEIGHTS,
+            *EventEngine.DEFAULT_SOURCE_PROBABILITIES,
         }
         if not isinstance(config["weights"], dict):
             raise ValueError("weights must be a mapping")
@@ -327,14 +341,16 @@ class SimulationEngine:
             for value in config["weights"].values()
         ):
             raise ValueError("transition probabilities must be in the range 0..1")
-        effective = {
-            "vacancy": EventEngine.DEFAULT_POSITION_WEIGHTS["vacancy"],
-            "interstitial": EventEngine.DEFAULT_POSITION_WEIGHTS["interstitial"],
-            "shell_r1": EventEngine.DEFAULT_SHELL_WEIGHTS[1],
-            "shell_r2": EventEngine.DEFAULT_SHELL_WEIGHTS[2],
-            **config["weights"],
-        }
-        for left, right in (("vacancy", "interstitial"), ("shell_r1", "shell_r2")):
-            if abs(float(effective[left]) + float(effective[right]) - 1.0) > 1e-9:
+        effective = EventEngine.effective_source_probabilities(config["weights"])
+        for source_kind in ("lattice", "interstitial"):
+            for left_suffix, right_suffix in (
+                ("vacancy", "interstitial"),
+                ("shell_r1", "shell_r2"),
+                ("inside", "outside"),
+            ):
+                left = f"from_{source_kind}_{left_suffix}"
+                right = f"from_{source_kind}_{right_suffix}"
+                if abs(effective[left] + effective[right] - 1.0) <= 1e-9:
+                    continue
                 raise ValueError(f"{left} and {right} probabilities must sum to 1")
         return config

@@ -21,7 +21,13 @@ class SimulationScheduler:
         self._active: set[asyncio.Task] = set()
         self._closed = False
 
-    async def submit(self, simulation_id: str, command):
+    async def submit(
+        self,
+        simulation_id: str,
+        command,
+        *,
+        enforce_timeout: bool = True,
+    ):
         if self._closed:
             raise RuntimeError("Scheduler is closed")
         task = asyncio.current_task()
@@ -33,6 +39,8 @@ class SimulationScheduler:
                     if task is not None:
                         self._pending[simulation_id].discard(task)
                         self._active.add(task)
+                    if not enforce_timeout:
+                        return await command()
                     try:
                         return await asyncio.wait_for(
                             command(), timeout=self.command_timeout_seconds

@@ -42,6 +42,17 @@ class SimulationState:
     def working_copy(self):
         return deepcopy(self)
 
+    def transition_copy(self, *, include_history: bool = True):
+        return type(self)(
+            atoms=dict(self.atoms),
+            occupied=dict(self.occupied),
+            act_number=self.act_number,
+            revision=self.revision,
+            events=list(self.events) if include_history else [],
+            metrics_points=list(self.metrics_points) if include_history else [],
+            configuration=deepcopy(self.configuration),
+        )
+
     def relocate(self, atom_id: int, destination_key: str) -> None:
         if atom_id not in self.atoms:
             raise StateInvariantError("UNKNOWN_ATOM")

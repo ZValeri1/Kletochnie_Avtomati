@@ -80,7 +80,7 @@ export function SimulationList({
                 onCommand(record.summary.simulation_id, "run");
               }}
             >
-              Запуск
+              Быстрый запуск
             </button>
             <button
               data-testid="pause-simulation"

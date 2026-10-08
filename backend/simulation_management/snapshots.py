@@ -47,6 +47,12 @@ class SnapshotFactory:
         if session.state is None:
             raw = deepcopy(session.last_valid_snapshot)
             dimensions = tuple(raw.get("dimensions", session.configuration.get("dimensions", (4, 4))))
+            raw_configuration = deepcopy(raw["configuration"])
+            raw_weights = raw_configuration.get("weights", {})
+            raw_configuration["weights"] = {
+                **raw_weights,
+                **EventEngine.effective_source_probabilities(raw_weights),
+            }
             atoms = tuple(
                 AtomSnapshot(
                     id=item["id"],
@@ -81,9 +87,7 @@ class SnapshotFactory:
                     else "PREPARATION"
                 ),
                 config_locked=getattr(session, "has_started", False),
-                configuration=SimulationConfiguration.model_validate(
-                    raw["configuration"]
-                ),
+                configuration=SimulationConfiguration.model_validate(raw_configuration),
                 dimensions=dimensions,
                 atoms=atoms,
                 vacancies=tuple(raw.get("vacancies", [])),
@@ -159,6 +163,7 @@ class SnapshotFactory:
             seed_sim=session.configuration.get("seed_sim"),
             source_project_id=getattr(session, "source_project_id", None),
             source_simulation_id=getattr(session, "source_simulation_id", None),
+            run_mode=getattr(session, "run_mode", None),
             last_valid_snapshot=deepcopy(session.last_valid_snapshot),
             error=session.error,
         )
@@ -171,6 +176,9 @@ class SnapshotFactory:
             "shell_r2": EventEngine.DEFAULT_SHELL_WEIGHTS[2],
             **EventEngine.DEFAULT_POSITION_WEIGHTS,
             **configuration.get("weights", {}),
+            **EventEngine.effective_source_probabilities(
+                configuration.get("weights", {})
+            ),
         }
         return SimulationConfiguration(
             dimensions=tuple(configuration["dimensions"]),

@@ -128,6 +128,8 @@ class SimulationManager:
         *,
         allow_running: bool = False,
         publish_updates: bool = True,
+        publish_event_only: bool = False,
+        enforce_timeout: bool = True,
     ) -> StepResponse | None:
         simulation_id = session.simulation_id
 
@@ -146,7 +148,7 @@ class SimulationManager:
                 if not session.has_started:
                     session.trajectory_initial = session.history.current()
 
-                working_state = session.state.working_copy()
+                working_state = session.state.transition_copy(include_history=False)
                 working_random = RandomSource(session.configuration.get("seed_sim"))
                 working_random.set_state(session.random_source.get_state())
                 try:
@@ -164,6 +166,7 @@ class SimulationManager:
                     self._mark_recoverable_error(session, "step", error)
                     await self._publish_error(session)
                     raise
+                self._reattach_journals(session.state, result.state)
                 session.state = result.state
                 session.topology = result.topology
                 session.random_source.set_state(working_random.get_state())
@@ -185,6 +188,15 @@ class SimulationManager:
                     source_revision=session.public_revision,
                 )
                 if not publish_updates:
+                    if publish_event_only:
+                        event = self._event(session, event_payload)
+                        await self.event_hub.publish(
+                            simulation_id,
+                            {
+                                "type": "event",
+                                "event": event.model_dump(mode="json"),
+                            },
+                        )
                     return None
                 event = self._event(session, event_payload)
                 snapshot = SnapshotFactory.create(session)
@@ -214,7 +226,11 @@ class SimulationManager:
                 return response
 
         try:
-            return await self.scheduler.submit(simulation_id, execute)
+            return await self.scheduler.submit(
+                simulation_id,
+                execute,
+                enforce_timeout=enforce_timeout,
+            )
         except SimulationTimeoutError as error:
             async with session.lock:
                 self._mark_recoverable_error(session, "step", error)
@@ -466,6 +482,7 @@ class SimulationManager:
             state,
             session.random_source.get_state(),
             source_revision=session.public_revision,
+            force_checkpoint=action in {"configure", "boundary"},
         )
         snapshot = SnapshotFactory.create(session)
         session.last_valid_snapshot = snapshot
@@ -512,10 +529,12 @@ class SimulationManager:
                 self._ensure_manual_allowed(session, operation)
                 if session.revision != expected_revision:
                     raise RevisionConflictError("Revision conflict")
+                working_state = session.state.transition_copy(include_history=False)
                 result = await asyncio.to_thread(
-                    getattr(self.engine, operation), session.state, *args
+                    getattr(self.engine, operation), working_state, *args
                 )
                 result.state.validate(result.topology)
+                self._reattach_journals(session.state, result.state)
                 session.state = result.state
                 session.topology = result.topology
                 session.public_revision += 1
@@ -681,8 +700,17 @@ class SimulationManager:
         return await self.scheduler.submit(simulation_id, execute)
 
     async def run(
-        self, simulation_id: str, expected_revision: int | None = None
+        self,
+        simulation_id: str,
+        expected_revision: int | None = None,
+        *,
+        mode: str = "fast",
+        interval_ms: int = 800,
     ):
+        if mode not in {"visual", "fast"}:
+            raise ValueError("run mode must be visual or fast")
+        if not 0 <= interval_ms <= 5000:
+            raise ValueError("run interval must be in the range 0..5000 ms")
         session = self._session(simulation_id)
         self._ensure_command_allowed(session, "run")
         self._ensure_revision(session, expected_revision)
@@ -697,6 +725,8 @@ class SimulationManager:
                     session.trajectory_initial = session.history.current()
                 session.has_started = True
                 session.status = SimulationStatus.RUNNING
+                session.run_mode = mode
+                session.run_interval_seconds = interval_ms / 1000
                 session.pause_requested = False
                 session.public_revision += 1
                 if session.run_task is None or session.run_task.done():
@@ -1181,18 +1211,26 @@ class SimulationManager:
         await self.scheduler.close()
 
     async def _run_loop(self, session: SimulationSession) -> None:
+        next_graph_update = 0.0
         try:
             while (
                 session.status == SimulationStatus.RUNNING
                 and not session.pause_requested
             ):
+                visual_mode = session.run_mode == "visual"
+                now = asyncio.get_running_loop().time()
+                publish_graph_point = not visual_mode and now >= next_graph_update
                 await self._execute_step(
                     session,
                     session.revision,
                     allow_running=True,
-                    publish_updates=False,
+                    publish_updates=visual_mode,
+                    publish_event_only=publish_graph_point,
+                    enforce_timeout=visual_mode,
                 )
-                await asyncio.sleep(0)
+                if publish_graph_point:
+                    next_graph_update = asyncio.get_running_loop().time() + 0.1
+                await asyncio.sleep(session.run_interval_seconds if visual_mode else 0)
         except asyncio.CancelledError:
             raise
         except Exception:
@@ -1358,3 +1396,12 @@ class SimulationManager:
         payload["event_id"] = f"{session.simulation_id}:{payload['event_id']}"
         payload["revision"] = session.revision
         return payload
+
+    @staticmethod
+    def _reattach_journals(previous: SimulationState, current: SimulationState) -> None:
+        new_events = current.events
+        new_metrics = current.metrics_points
+        current.events = previous.events
+        current.metrics_points = previous.metrics_points
+        current.events.extend(new_events)
+        current.metrics_points.extend(new_metrics)

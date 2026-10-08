@@ -3,6 +3,7 @@ import type {
   MetricsSeries,
   SimulationMetrics,
 } from "../contracts";
+import { useEffect, useRef, useState } from "react";
 
 const metricLabels: Record<string, string> = {
   n_correct: "Атомы в узлах",
@@ -28,17 +29,102 @@ export function metricPlotPoints(points: MetricsPoint[], key: "d" | "s") {
   }));
 }
 
+export function latestSimulationMetrics(
+  current: SimulationMetrics,
+  currentRevision: number,
+  series: MetricsSeries,
+): SimulationMetrics {
+  const latest = series.points.reduce<MetricsPoint | null>(
+    (candidate, point) =>
+      candidate === null || point.revision > candidate.revision
+        ? point
+        : candidate,
+    null,
+  );
+  if (latest === null || latest.revision < currentRevision) return current;
+  return {
+    n_correct: latest.n_correct,
+    n_v: latest.n_v,
+    n_i: latest.n_i,
+    n_as: latest.n_as,
+    d: latest.d,
+    s: latest.s,
+  };
+}
+
+export type SimulationRateSample = {
+  actNumber: number;
+  observedAtMs: number;
+};
+
+export function simulationRate(
+  previous: SimulationRateSample,
+  current: SimulationRateSample,
+): number {
+  const elapsedSeconds = (current.observedAtMs - previous.observedAtMs) / 1_000;
+  if (elapsedSeconds <= 0 || current.actNumber < previous.actNumber) return 0;
+  return (current.actNumber - previous.actNumber) / elapsedSeconds;
+}
+
+function useSimulationSpeed(series: MetricsSeries, running: boolean): number {
+  const previous = useRef<(SimulationRateSample & { simulationId: string }) | null>(
+    null,
+  );
+  const [speed, setSpeed] = useState(0);
+  const latest = series.points.reduce<MetricsPoint | null>(
+    (candidate, point) =>
+      candidate === null || point.revision > candidate.revision
+        ? point
+        : candidate,
+    null,
+  );
+
+  useEffect(() => {
+    if (!running || latest === null) {
+      previous.current = null;
+      setSpeed(0);
+      return;
+    }
+    const current = {
+      simulationId: series.simulation_id,
+      actNumber: latest.act_number,
+      observedAtMs: performance.now(),
+    };
+    if (
+      previous.current !== null &&
+      previous.current.simulationId === current.simulationId
+    ) {
+      setSpeed(simulationRate(previous.current, current));
+    } else {
+      setSpeed(0);
+    }
+    previous.current = current;
+  }, [latest?.revision, latest?.act_number, running, series.simulation_id]);
+
+  return speed;
+}
+
 export function MetricsPanel({
   current,
+  currentRevision,
   series,
+  running = false,
   selectedRevision,
   onSelectRevision,
 }: {
   current: SimulationMetrics;
+  currentRevision: number;
   series: MetricsSeries;
+  running?: boolean;
   selectedRevision?: number | null;
   onSelectRevision?: (revision: number | null) => void;
 }) {
+  const simulationSpeed = useSimulationSpeed(series, running);
+  const displayedMetrics = latestSimulationMetrics(
+    current,
+    currentRevision,
+    series,
+  );
   const chart = (
     key: "d" | "s",
     title: string,
@@ -116,12 +202,16 @@ export function MetricsPanel({
     <section className="panel" data-testid="metrics-panel">
       <h2>Структурные метрики</h2>
       <div className="metric-cards" data-testid="simulation-metrics">
-        {Object.entries(current).map(([key, value]) => (
+        {Object.entries(displayedMetrics).map(([key, value]) => (
           <div key={key} data-testid={`metric-${key.replaceAll("_", "-")}`}>
             <span>{metricLabels[key] ?? key}</span>
             <strong>{Number(value).toFixed(key === "s" ? 4 : 0)}</strong>
           </div>
         ))}
+      </div>
+      <div className="simulation-speed" data-testid="simulation-speed">
+        <span>Скорость симуляции</span>
+        <strong>{simulationSpeed.toFixed(simulationSpeed >= 10 ? 1 : 2)} акт/с</strong>
       </div>
       <div className="metric-legend" aria-label="Легенда графиков">
         <span>

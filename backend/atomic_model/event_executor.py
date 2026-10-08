@@ -34,7 +34,7 @@ class EventExecutor:
         source: SimulationState,
         candidate: EventCandidate,
     ) -> ExecutionResult:
-        state = source.working_copy()
+        state = source.transition_copy()
         if candidate.atom_id not in state.atoms:
             raise InvalidEventError("Atom does not exist")
         if candidate.operation not in self.ALLOWED_OPERATIONS:

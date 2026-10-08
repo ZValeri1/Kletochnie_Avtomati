@@ -97,6 +97,25 @@ def test_timeout_does_not_block_the_next_simulation():
     assert asyncio.run(scenario()) == "ok"
 
 
+def test_command_can_explicitly_run_without_the_scheduler_timeout():
+    async def scenario():
+        target = scheduler(timeout=0.001)
+
+        async def slower_than_the_default_timeout():
+            await asyncio.sleep(0.01)
+            return "completed"
+
+        result = await target.submit(
+            "sim-fast",
+            slower_than_the_default_timeout,
+            enforce_timeout=False,
+        )
+        await target.close()
+        return result
+
+    assert asyncio.run(scenario()) == "completed"
+
+
 def test_failure_of_one_command_does_not_stop_the_scheduler():
     async def scenario():
         target = scheduler(max_parallel=2)

@@ -24,6 +24,7 @@ from backend.api.models import (
     PreparationEditRequest,
     ProbabilityRequest,
     RevisionRequest,
+    RunRequest,
     SimulationCreateRequest,
     StepRequest,
 )
@@ -227,9 +228,14 @@ def create_simulations_router(manager) -> APIRouter:
         ).model_dump(mode="json")
 
     @router.post("/{simulation_id}/run", response_model=SimulationSummary)
-    async def run(simulation_id: str, request: RevisionRequest):
+    async def run(simulation_id: str, request: RunRequest):
         return (
-            await manager.run(simulation_id, request.expected_revision)
+            await manager.run(
+                simulation_id,
+                request.expected_revision,
+                mode=request.mode,
+                interval_ms=request.interval_ms,
+            )
         ).model_dump(mode="json")
 
     @router.post("/{simulation_id}/pause", response_model=SimulationSummary)

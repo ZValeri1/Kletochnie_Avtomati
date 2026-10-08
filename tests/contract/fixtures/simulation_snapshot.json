@@ -35,7 +35,19 @@
       "shell_r2": 0.25,
       "vacancy": 0.8,
       "interstitial": 0.2,
-      "external": 0.05
+      "external": 0.05,
+      "from_lattice_vacancy": 0.8,
+      "from_lattice_interstitial": 0.2,
+      "from_lattice_shell_r1": 0.75,
+      "from_lattice_shell_r2": 0.25,
+      "from_lattice_inside": 0.95,
+      "from_lattice_outside": 0.05,
+      "from_interstitial_vacancy": 0.8,
+      "from_interstitial_interstitial": 0.2,
+      "from_interstitial_shell_r1": 0.75,
+      "from_interstitial_shell_r2": 0.25,
+      "from_interstitial_inside": 0.95,
+      "from_interstitial_outside": 0.05
     }
   },
   "atoms": [

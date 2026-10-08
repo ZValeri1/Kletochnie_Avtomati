@@ -25,7 +25,10 @@ import { ProjectPanel } from "../projects/ProjectPanel";
 import { Lattice2DRenderer } from "../rendering/canvas2d/Lattice2DRenderer";
 import { mapSnapshotToRenderFrame } from "../rendering/common/snapshotMapper";
 import { Lattice3DRenderer } from "../rendering/three3d/Lattice3DRenderer";
-import { SimulationControls } from "../simulations/SimulationControls";
+import {
+  SimulationControls,
+  type RunMode,
+} from "../simulations/SimulationControls";
 import { SimulationList } from "../simulations/SimulationList";
 import { commandAvailability } from "../simulations/capabilities";
 import { simulationStatusPresentation } from "../simulations/statusPresentation";
@@ -55,6 +58,7 @@ export function App() {
   const [configurationError, setConfigurationError] = useState("");
   const [focusedRevision, setFocusedRevision] = useState<number | null>(null);
   const [playbackMs, setPlaybackMs] = useState(800);
+  const [runMode, setRunMode] = useState<RunMode>("visual");
   const [experimentStatus, setExperimentStatus] =
     useState<ExperimentStatus | null>(null);
   const [experimentResults, setExperimentResults] =
@@ -143,13 +147,19 @@ export function App() {
 
   const command = (simulationId: string, type: "run" | "pause" | "stop") =>
     run(async () => {
-      const summary = await simulationApi.summaryCommand(
-        simulationId,
-        type,
-        store.getSimulation(simulationId).summary.revision,
-      );
+      const revision = store.getSimulation(simulationId).summary.revision;
+      const summary =
+        type === "run"
+          ? await simulationApi.run(simulationId, revision, "fast", 250)
+          : await simulationApi.summaryCommand(simulationId, type, revision);
       store.applySummary(summary);
       if (type === "run") store.clearOverlay(simulationId);
+      else {
+        store.applySnapshot(await simulationApi.snapshot(simulationId), {
+          allowEqual: true,
+        });
+        await loadSideData(simulationId);
+      }
       refresh();
     });
 
@@ -271,9 +281,14 @@ export function App() {
           await simulationApi.retry(selectedId, revision),
         );
       } else {
-        const route = type === "acknowledge" ? "error/acknowledge" : type;
         store.applySummary(
-          await simulationApi.summaryCommand(selectedId, route, revision),
+          type === "run"
+            ? await simulationApi.run(selectedId, revision, runMode, playbackMs)
+            : await simulationApi.summaryCommand(
+                selectedId,
+                type === "acknowledge" ? "error/acknowledge" : type,
+                revision,
+              ),
         );
         store.applySnapshot(await simulationApi.snapshot(selectedId), {
           allowEqual: true,
@@ -464,7 +479,9 @@ export function App() {
     <main className="app-shell">
       <header className="app-header">
         <div className="brand-block">
-          <span className="brand-mark" aria-hidden="true">γ</span>
+          <span className="brand-mark" aria-hidden="true">
+            γ
+          </span>
           <div>
             <span className="eyebrow">Gamma Irradiation</span>
             <h1>Моделирование облучения</h1>
@@ -478,7 +495,9 @@ export function App() {
       <nav className="method-switcher" aria-label="Методы моделирования">
         <span>Методы моделирования</span>
         <div>
-          <button type="button" aria-current="page">Монте-Карло</button>
+          <button type="button" aria-current="page">
+            Монте-Карло
+          </button>
           <button
             type="button"
             className="method-coming-soon"
@@ -528,21 +547,33 @@ export function App() {
       <div className="dashboard-grid">
         <section className="visualization-area">
           {selected && selectedId ? (
-          <div
-            data-testid="selected-simulation"
-            data-revision={selected.summary.revision}
-            data-status={selected.summary.status}
-            className="selected-summary simulation-titlebar"
-          >
-            <div>
-              <span className="section-kicker">Активная сессия</span>
-              <strong>Симуляция {Math.max(1, records.findIndex((record) => record.summary.simulation_id === selectedId) + 1)}</strong>
+            <div
+              data-testid="selected-simulation"
+              data-revision={selected.summary.revision}
+              data-status={selected.summary.status}
+              className="selected-summary simulation-titlebar"
+            >
+              <div>
+                <span className="section-kicker">Активная сессия</span>
+                <strong>
+                  Симуляция{" "}
+                  {Math.max(
+                    1,
+                    records.findIndex(
+                      (record) => record.summary.simulation_id === selectedId,
+                    ) + 1,
+                  )}
+                </strong>
+              </div>
+              <span
+                className={`status-pill status-${selected.summary.status.toLowerCase()}`}
+              >
+                {simulationStatusPresentation[selected.summary.status].label}
+              </span>
+              <span className="revision-label">
+                Ревизия {selected.summary.revision}
+              </span>
             </div>
-            <span className={`status-pill status-${selected.summary.status.toLowerCase()}`}>
-              {simulationStatusPresentation[selected.summary.status].label}
-            </span>
-            <span className="revision-label">Ревизия {selected.summary.revision}</span>
-          </div>
           ) : (
             <div className="selected-summary simulation-titlebar empty-titlebar">
               <div>
@@ -553,6 +584,23 @@ export function App() {
             </div>
           )}
           <div className="simulation-stage">
+            {selected?.summary.status === "RUNNING" &&
+              selected.summary.run_mode === "fast" && (
+                <div
+                  className="fast-mode-overlay"
+                  data-testid="fast-mode-overlay"
+                  role="status"
+                >
+                  <span className="fast-mode-symbol" aria-hidden="true">
+                    ≫
+                  </span>
+                  <strong>Симуляция идёт в быстром режиме</strong>
+                  <span>
+                    Отображение структуры отключено. Графики обновляются во
+                    время расчёта.
+                  </span>
+                </div>
+              )}
             {frame && frame.mode === "2d" && (
               <Lattice2DRenderer
                 frame={frame}
@@ -573,13 +621,16 @@ export function App() {
               <Lattice3DRenderer
                 frame={frame}
                 onError={(error) => {
-                  if (selectedId) store.recordRendererFailure(selectedId, error);
+                  if (selectedId)
+                    store.recordRendererFailure(selectedId, error);
                 }}
               />
             )}
             {!selected && (
               <div className="empty-state stage-empty">
-                <span className="empty-orbit" aria-hidden="true">γ</span>
+                <span className="empty-orbit" aria-hidden="true">
+                  γ
+                </span>
                 <strong>Подготовьте первую симуляцию</strong>
                 <span>Задайте параметры ниже — модель появится здесь.</span>
               </div>
@@ -596,7 +647,9 @@ export function App() {
                 content: selected?.current_snapshot ? (
                   <MetricsPanel
                     current={selected.current_snapshot.metrics}
+                    currentRevision={selected.current_snapshot.revision}
                     series={selected.metrics}
+                    running={selected.summary.status === "RUNNING"}
                     selectedRevision={focusedRevision}
                     onSelectRevision={setFocusedRevision}
                   />
@@ -694,6 +747,12 @@ export function App() {
               onRemove={removeSelected}
               playbackMs={playbackMs}
               onPlaybackMs={setPlaybackMs}
+              runMode={
+                selected.summary.status === "RUNNING"
+                  ? (selected.summary.run_mode ?? runMode)
+                  : runMode
+              }
+              onRunMode={setRunMode}
             />
           )}
           <ConfigurationEditor

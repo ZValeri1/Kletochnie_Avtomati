@@ -44,6 +44,18 @@ class OperationWeights(BaseModel):
     vacancy: float | None = Field(default=None, ge=0, le=1)
     interstitial: float | None = Field(default=None, ge=0, le=1)
     external: float | None = Field(default=None, ge=0, le=1)
+    from_lattice_vacancy: float | None = Field(default=None, ge=0, le=1)
+    from_lattice_interstitial: float | None = Field(default=None, ge=0, le=1)
+    from_lattice_shell_r1: float | None = Field(default=None, ge=0, le=1)
+    from_lattice_shell_r2: float | None = Field(default=None, ge=0, le=1)
+    from_lattice_inside: float | None = Field(default=None, ge=0, le=1)
+    from_lattice_outside: float | None = Field(default=None, ge=0, le=1)
+    from_interstitial_vacancy: float | None = Field(default=None, ge=0, le=1)
+    from_interstitial_interstitial: float | None = Field(default=None, ge=0, le=1)
+    from_interstitial_shell_r1: float | None = Field(default=None, ge=0, le=1)
+    from_interstitial_shell_r2: float | None = Field(default=None, ge=0, le=1)
+    from_interstitial_inside: float | None = Field(default=None, ge=0, le=1)
+    from_interstitial_outside: float | None = Field(default=None, ge=0, le=1)
 
 
 class SimulationCreateRequest(VersionedRequest):
@@ -128,6 +140,11 @@ class RevisionRequest(VersionedRequest):
     model_config = ConfigDict(extra="forbid")
 
     expected_revision: int = Field(ge=0)
+
+
+class RunRequest(RevisionRequest):
+    mode: Literal["visual", "fast"] = "fast"
+    interval_ms: int = Field(default=800, ge=0, le=5000)
 
 
 class ProbabilityRequest(VersionedRequest):

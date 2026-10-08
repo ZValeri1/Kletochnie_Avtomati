@@ -172,6 +172,18 @@ class EffectiveWeights(BaseModel):
     vacancy: FiniteFloat = Field(ge=0, le=1)
     interstitial: FiniteFloat = Field(ge=0, le=1)
     external: FiniteFloat = Field(ge=0, le=1)
+    from_lattice_vacancy: FiniteFloat = Field(ge=0, le=1)
+    from_lattice_interstitial: FiniteFloat = Field(ge=0, le=1)
+    from_lattice_shell_r1: FiniteFloat = Field(ge=0, le=1)
+    from_lattice_shell_r2: FiniteFloat = Field(ge=0, le=1)
+    from_lattice_inside: FiniteFloat = Field(ge=0, le=1)
+    from_lattice_outside: FiniteFloat = Field(ge=0, le=1)
+    from_interstitial_vacancy: FiniteFloat = Field(ge=0, le=1)
+    from_interstitial_interstitial: FiniteFloat = Field(ge=0, le=1)
+    from_interstitial_shell_r1: FiniteFloat = Field(ge=0, le=1)
+    from_interstitial_shell_r2: FiniteFloat = Field(ge=0, le=1)
+    from_interstitial_inside: FiniteFloat = Field(ge=0, le=1)
+    from_interstitial_outside: FiniteFloat = Field(ge=0, le=1)
 
 
 class SimulationConfiguration(BaseModel):
@@ -337,6 +349,7 @@ class SimulationSummary(BaseModel):
     seed_sim: int | None = None
     source_project_id: str | None = None
     source_simulation_id: str | None = None
+    run_mode: Literal["visual", "fast"] | None = None
     last_valid_snapshot: SimulationSnapshot | dict[str, Any] | None = None
     error: ApplicationError | None = None
 

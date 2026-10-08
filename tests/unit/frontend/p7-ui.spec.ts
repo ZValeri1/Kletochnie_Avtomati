@@ -98,10 +98,73 @@ test("a locked configuration exposes every server parameter as read-only data", 
     /data-testid="locked-random-vacancies"[^>]*>[^<]*1[,.]25[^<]*0[,.]4/,
   );
   expect(markup).toMatch(/Вероятности переходов/);
-  expect(markup).toMatch(/data-testid="locked-weight-vacancy"[^>]*>0[,.]8</);
-  expect(markup).toMatch(/data-testid="locked-weight-shell-r2"[^>]*>0[,.]25</);
+  expect(markup).toMatch(
+    /data-testid="locked-weight-from-lattice-vacancy"[^>]*>0[,.]8</,
+  );
+  expect(markup).toMatch(
+    /data-testid="locked-weight-from-lattice-shell-r2"[^>]*>0[,.]25</,
+  );
+  expect(markup).toMatch(
+    /data-testid="locked-weight-from-interstitial-vacancy"[^>]*>0[,.]8</,
+  );
+  expect(markup).toMatch(
+    /data-testid="locked-weight-from-interstitial-shell-r2"[^>]*>0[,.]25</,
+  );
   expect(markup).toContain('data-testid="locked-field-dimensions"');
   expect(markup).toContain('data-testid="locked-profile"');
+});
+
+test("the probability editor exposes separate defaults for lattice and interstitial sources", async () => {
+  const vite = await createServer({
+    server: { middlewareMode: true },
+    appType: "custom",
+    optimizeDeps: { noDiscovery: true },
+  });
+  const { ConfigurationEditor } = await vite.ssrLoadModule(
+    "/src/configuration/ConfigurationEditor.tsx",
+  );
+
+  const markup = renderToStaticMarkup(
+    createElement(ConfigurationEditor, {
+      onCreate: () => undefined,
+    }),
+  );
+  await vite.close();
+
+  expect(markup).toContain("Начальная позиция: узел");
+  expect(markup).toContain("Начальная позиция: межузел");
+  for (const source of ["lattice", "interstitial"]) {
+    expect(markup).toMatch(
+      new RegExp(
+        `data-testid="weight-from-${source}-vacancy"[^>]*value="0[.,]8"`,
+      ),
+    );
+    expect(markup).toMatch(
+      new RegExp(
+        `data-testid="weight-from-${source}-interstitial"[^>]*value="0[.,]2"`,
+      ),
+    );
+    expect(markup).toMatch(
+      new RegExp(
+        `data-testid="weight-from-${source}-shell-r1"[^>]*value="0[.,]75"`,
+      ),
+    );
+    expect(markup).toMatch(
+      new RegExp(
+        `data-testid="weight-from-${source}-shell-r2"[^>]*value="0[.,]25"`,
+      ),
+    );
+    expect(markup).toMatch(
+      new RegExp(
+        `data-testid="weight-from-${source}-inside"[^>]*value="0[.,]95"`,
+      ),
+    );
+    expect(markup).toMatch(
+      new RegExp(
+        `data-testid="weight-from-${source}-outside"[^>]*value="0[.,]05"`,
+      ),
+    );
+  }
 });
 
 test("the 3D structure editor keeps atom actions visible and explains the boundary limitation", async () => {
@@ -463,6 +526,8 @@ test("the control panel explains the current status and retained history in Russ
         onRemove: () => undefined,
         playbackMs: 800,
         onPlaybackMs: () => undefined,
+        runMode: "visual",
+        onRunMode: () => undefined,
       }),
     );
 
@@ -472,7 +537,91 @@ test("the control panel explains the current status and retained history in Russ
     );
     expect(markup).toContain("Сохранено действий: 100 из 100");
     expect(markup).toContain("ранние действия усечены");
+    expect(markup).toContain("Обычный");
+    expect(markup).toContain("с отображением");
+    expect(markup).toContain("Быстрый");
+    expect(markup).toContain("без отображения");
+    expect(markup).toContain("Что делают кнопки");
+    expect(markup).toContain(
+      "Запускает непрерывный расчёт в выбранном ниже режиме.",
+    );
+    expect(markup).toMatch(
+      /data-testid="playback-speed"[\s\S]*option value="0">Максимальная/,
+    );
     expect(markup).not.toContain("PAUSED_WITH_ERROR");
+  } finally {
+    await vite.close();
+  }
+});
+
+test("structural metric cards prefer the newest streamed graph point", async () => {
+  const modulePath = "../../../src/metrics/MetricsPanel.tsx";
+  const { latestSimulationMetrics } = await import(modulePath);
+  const snapshot = fixture("simulation_snapshot.json");
+
+  expect(
+    latestSimulationMetrics(snapshot.metrics, snapshot.revision, {
+      schema_version: 1,
+      simulation_id: snapshot.simulation_id,
+      revision: snapshot.revision + 1,
+      points: [
+        {
+          revision: snapshot.revision + 1,
+          act_number: 7,
+          origin: "simulation",
+          n_correct: 10,
+          n_v: 2,
+          n_i: 3,
+          n_as: 4,
+          d: 9,
+          s: 1.25,
+        },
+      ],
+    }),
+  ).toEqual({
+    n_correct: 10,
+    n_v: 2,
+    n_i: 3,
+    n_as: 4,
+    d: 9,
+    s: 1.25,
+  });
+});
+
+test("the chart block reports simulation throughput in acts per second", async () => {
+  const vite = await createServer({
+    server: { middlewareMode: true },
+    appType: "custom",
+    optimizeDeps: { noDiscovery: true },
+  });
+  const { MetricsPanel, simulationRate } = await vite.ssrLoadModule(
+    "/src/metrics/MetricsPanel.tsx",
+  );
+  const snapshot = fixture("simulation_snapshot.json");
+  try {
+    expect(
+      simulationRate(
+        { actNumber: 20, observedAtMs: 1_000 },
+        { actNumber: 35, observedAtMs: 1_600 },
+      ),
+    ).toBe(25);
+
+    const markup = renderToStaticMarkup(
+      createElement(MetricsPanel, {
+        current: snapshot.metrics,
+        currentRevision: snapshot.revision,
+        series: {
+          schema_version: 1,
+          simulation_id: snapshot.simulation_id,
+          revision: snapshot.revision,
+          points: [],
+        },
+      }),
+    );
+
+    expect(markup).toContain('data-testid="simulation-speed"');
+    expect(markup).toContain("Скорость симуляции");
+    expect(markup).toContain("акт/с");
   } finally {
     await vite.close();
   }

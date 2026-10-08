@@ -81,6 +81,12 @@ def test_snapshot_factory_returns_an_immutable_detached_dto():
     assert value(value(dto, "history_capabilities"), "history_truncated") is False
     assert value(dto, "phase") == "PREPARATION"
     assert value(dto, "config_locked") is False
+    weights = value(value(dto, "configuration"), "weights")
+    assert value(weights, "from_lattice_vacancy") == 0.8
+    assert value(weights, "from_interstitial_vacancy") == 0.8
+    assert value(weights, "from_interstitial_shell_r1") == 0.75
+    assert value(weights, "from_interstitial_inside") == 0.95
+    assert value(weights, "from_interstitial_outside") == 0.05
 
 
 def test_snapshot_atoms_expose_site_kind_and_metal_relation_from_topology():
@@ -379,5 +385,97 @@ def test_continuous_run_suppresses_intermediate_frames_and_publishes_final_state
 
     summary, messages = asyncio.run(scenario())
     assert status_value(summary) == expected_status
-    assert [message["type"] for message in messages] == ["snapshot", "status"]
-    assert messages[0]["snapshot"]["status"] == expected_status
+    assert [message["type"] for message in messages] == [
+        "event", "snapshot", "status"
+    ]
+    assert messages[1]["snapshot"]["status"] == expected_status
+
+
+def test_visual_run_publishes_an_event_and_snapshot_for_each_visible_frame():
+    event_hub_class = symbol(
+        "backend.simulation_management.event_hub", "EventHub"
+    )
+    manager_class = symbol(
+        "backend.simulation_management.manager", "SimulationManager"
+    )
+
+    class RecordingEventHub(event_hub_class):
+        def __init__(self):
+            super().__init__()
+            self.messages = []
+
+        async def publish(self, simulation_id, message):
+            published = await super().publish(simulation_id, message)
+            self.messages.append(published)
+            return published
+
+    async def scenario():
+        hub = RecordingEventHub()
+        manager = manager_class(event_hub=hub)
+        created = await manager.create(config())
+        await manager.run(
+            created.simulation_id,
+            expected_revision=0,
+            mode="visual",
+            interval_ms=0,
+        )
+        for _ in range(100):
+            if any(message["type"] == "event" for message in hub.messages):
+                break
+            await asyncio.sleep(0.01)
+        session = manager.sessions[created.simulation_id]
+        session.pause_requested = True
+        if session.run_task is not None:
+            await asyncio.wait_for(session.run_task, timeout=2)
+        messages = list(hub.messages)
+        await manager.close()
+        return messages
+
+    messages = asyncio.run(scenario())
+    first_event = next(
+        index for index, message in enumerate(messages) if message["type"] == "event"
+    )
+    assert messages[first_event + 1]["type"] == "snapshot"
+    assert messages[first_event + 1]["snapshot"]["status"] == "RUNNING"
+    assert messages[first_event]["event"]["metrics_after"]
+
+
+def test_fast_run_executes_steps_without_the_scheduler_timeout():
+    scheduler_class = symbol(
+        "backend.simulation_management.scheduler", "SimulationScheduler"
+    )
+    manager_class = symbol(
+        "backend.simulation_management.manager", "SimulationManager"
+    )
+
+    class RecordingScheduler(scheduler_class):
+        def __init__(self):
+            super().__init__()
+            self.enforce_timeout_values = []
+
+        async def submit(self, simulation_id, command, *, enforce_timeout=True):
+            self.enforce_timeout_values.append(enforce_timeout)
+            return await super().submit(
+                simulation_id,
+                command,
+                enforce_timeout=enforce_timeout,
+            )
+
+    async def scenario():
+        scheduler = RecordingScheduler()
+        manager = manager_class(scheduler=scheduler)
+        created = await manager.create(config())
+        await manager.run(created.simulation_id, expected_revision=0, mode="fast")
+        session = manager.sessions[created.simulation_id]
+        for _ in range(100):
+            if False in scheduler.enforce_timeout_values:
+                break
+            await asyncio.sleep(0.01)
+        session.pause_requested = True
+        if session.run_task is not None:
+            await asyncio.wait_for(session.run_task, timeout=2)
+        values = list(scheduler.enforce_timeout_values)
+        await manager.close()
+        return values
+
+    assert False in asyncio.run(scenario())

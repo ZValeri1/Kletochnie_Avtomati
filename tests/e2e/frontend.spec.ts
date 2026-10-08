@@ -64,9 +64,31 @@ test("parallel simulations stay visually frozen until their final paused frame",
   );
   await rows.nth(1).getByTestId("pause-simulation").click();
   await expect(rows.nth(1)).toHaveAttribute("data-status", "PAUSED");
-  expect(Number(await rows.nth(1).getAttribute("data-revision"))).toBeGreaterThan(
-    runningRevision,
-  );
+  expect(
+    Number(await rows.nth(1).getAttribute("data-revision")),
+  ).toBeGreaterThan(runningRevision);
+});
+
+test("run mode is explicit, fast mode streams graphs, and visual mode can be restored", async ({
+  page,
+}) => {
+  await page.goto("/");
+  await page.getByTestId("create-simulation").click();
+
+  await page.getByTestId("run-mode-fast").check();
+  await page.getByTestId("run-selected-simulation").click();
+  await expect(page.getByTestId("fast-mode-overlay")).toBeVisible();
+  await expect(
+    page.getByTestId("metrics-panel").locator("circle.physical-point").first(),
+  ).toBeVisible();
+
+  await page.getByTestId("pause-selected-simulation").click();
+  await expect(page.getByTestId("fast-mode-overlay")).toBeHidden();
+  await page.getByTestId("run-mode-visual").check();
+  await page.getByTestId("run-selected-simulation").click();
+  await expect(page.getByTestId("renderer-2d")).toBeVisible();
+  await expect(page.getByTestId("fast-mode-overlay")).toBeHidden();
+  await page.getByTestId("pause-selected-simulation").click();
 });
 
 test("project save/load restores a simulation and journal export is a browser download", async ({

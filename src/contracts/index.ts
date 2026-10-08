@@ -275,6 +275,7 @@ export type SimulationSummary = {
   seed_sim?: number | null;
   source_project_id?: string | null;
   source_simulation_id?: string | null;
+  run_mode?: "visual" | "fast" | null;
   error?: ApplicationError | null;
 };
 
@@ -451,6 +452,18 @@ export function decodeSimulationSnapshot(value: unknown): SimulationSnapshot {
     "vacancy",
     "interstitial",
     "external",
+    "from_lattice_vacancy",
+    "from_lattice_interstitial",
+    "from_lattice_shell_r1",
+    "from_lattice_shell_r2",
+    "from_lattice_inside",
+    "from_lattice_outside",
+    "from_interstitial_vacancy",
+    "from_interstitial_interstitial",
+    "from_interstitial_shell_r1",
+    "from_interstitial_shell_r2",
+    "from_interstitial_inside",
+    "from_interstitial_outside",
   ];
   if (
     !Array.isArray(configDimensions) ||
@@ -877,6 +890,12 @@ export function decodeSimulationSummary(value: unknown): SimulationSummary {
       payload.source_simulation_id === undefined ||
       payload.source_simulation_id === null ||
       typeof payload.source_simulation_id === "string"
+    ) ||
+    !(
+      payload.run_mode === undefined ||
+      payload.run_mode === null ||
+      payload.run_mode === "visual" ||
+      payload.run_mode === "fast"
     ) ||
     !(
       payload.error === undefined ||

@@ -24,17 +24,52 @@ const defaultWeights = {
   vacancy: 0.8,
   interstitial: 0.2,
   external: 0.05,
+  from_lattice_vacancy: 0.8,
+  from_lattice_interstitial: 0.2,
+  from_lattice_shell_r1: 0.75,
+  from_lattice_shell_r2: 0.25,
+  from_lattice_inside: 0.95,
+  from_lattice_outside: 0.05,
+  from_interstitial_vacancy: 0.8,
+  from_interstitial_interstitial: 0.2,
+  from_interstitial_shell_r1: 0.75,
+  from_interstitial_shell_r2: 0.25,
+  from_interstitial_inside: 0.95,
+  from_interstitial_outside: 0.05,
 } satisfies Required<OperationWeightsInput>;
 type WeightKey = keyof typeof defaultWeights;
 
 const probabilityLabels = new Map<WeightKey, string>([
-  ["vacancy", "В свободный узел (вакансию)"],
-  ["interstitial", "В свободное межузлие"],
-  ["shell_r1", "Первый контур"],
-  ["shell_r2", "Второй контур"],
-  ["external", "Снаружи металла для внутреннего атома"],
+  ["from_lattice_vacancy", "Из узла → в свободный узел (вакансию)"],
+  ["from_lattice_interstitial", "Из узла → в свободное межузлие"],
+  ["from_lattice_shell_r1", "Из узла → первый контур"],
+  ["from_lattice_shell_r2", "Из узла → второй контур"],
+  ["from_lattice_inside", "Из узла → внутри металла или на границе"],
+  ["from_lattice_outside", "Из узла → снаружи металла"],
+  ["from_interstitial_vacancy", "Из межузлия → в свободный узел (вакансию)"],
+  ["from_interstitial_interstitial", "Из межузлия → в свободное межузлие"],
+  ["from_interstitial_shell_r1", "Из межузлия → первый контур"],
+  ["from_interstitial_shell_r2", "Из межузлия → второй контур"],
+  ["from_interstitial_inside", "Из межузлия → внутри металла или на границе"],
+  ["from_interstitial_outside", "Из межузлия → снаружи металла"],
   ["external_metal", "Внутрь металла для внешнего атома"],
 ]);
+const sourceProbabilityGroups = [
+  {
+    id: "lattice",
+    title: "Начальная позиция: узел",
+    typeKeys: ["from_lattice_vacancy", "from_lattice_interstitial"],
+    shellKeys: ["from_lattice_shell_r1", "from_lattice_shell_r2"],
+    positionKeys: ["from_lattice_inside", "from_lattice_outside"],
+  },
+  {
+    id: "interstitial",
+    title: "Начальная позиция: межузел",
+    typeKeys: ["from_interstitial_vacancy", "from_interstitial_interstitial"],
+    shellKeys: ["from_interstitial_shell_r1", "from_interstitial_shell_r2"],
+    positionKeys: ["from_interstitial_inside", "from_interstitial_outside"],
+  },
+] as const;
 const defaultRandom = {
   vacancies: { mu: 1, sigma: 0.5 },
   interstitials: { mu: 1, sigma: 0.5 },
@@ -140,13 +175,19 @@ export function ConfigurationEditor({
       setError("Все вероятности должны быть числами от 0 до 1.");
       return null;
     }
-    if (Math.abs(weights.vacancy + weights.interstitial - 1) > 1e-9) {
-      setError("Вероятности перехода в вакансию и межузлие должны давать 1.");
-      return null;
-    }
-    if (Math.abs(weights.shell_r1 + weights.shell_r2 - 1) > 1e-9) {
-      setError("Вероятности первого и второго контуров должны давать 1.");
-      return null;
+    for (const group of sourceProbabilityGroups) {
+      if (Math.abs(weights[group.typeKeys[0]] + weights[group.typeKeys[1]] - 1) > 1e-9) {
+        setError(`${group.title}: вероятности вакансии и межузлия должны давать 1.`);
+        return null;
+      }
+      if (Math.abs(weights[group.shellKeys[0]] + weights[group.shellKeys[1]] - 1) > 1e-9) {
+        setError(`${group.title}: вероятности первого и второго контуров должны давать 1.`);
+        return null;
+      }
+      if (Math.abs(weights[group.positionKeys[0]] + weights[group.positionKeys[1]] - 1) > 1e-9) {
+        setError(`${group.title}: вероятности внутри и снаружи металла должны давать 1.`);
+        return null;
+      }
     }
     setError("");
     return {
@@ -200,51 +241,57 @@ export function ConfigurationEditor({
           </p>
           <code>Pᵢ = P(тип) × P(контур) × P(положение) / N</code>
         </div>
-        <section className="weight-section" aria-labelledby="transition-weights-title">
-          <div className="weight-section-heading">
-            <span>1</span>
-            <div>
-              <h3 id="transition-weights-title">Тип свободной позиции</h3>
-              <p>Эти две вероятности в сумме должны давать 1.</p>
+        {sourceProbabilityGroups.map((group, groupIndex) => (
+          <section className="weight-section" aria-labelledby={`source-${group.id}-probabilities-title`} key={group.id}>
+            <div className="weight-section-heading">
+              <span>{groupIndex + 1}</span>
+              <div>
+                <h3 id={`source-${group.id}-probabilities-title`}>{group.title}</h3>
+                <p>Для каждого перехода используются три множителя вероятности.</p>
+              </div>
             </div>
-          </div>
-          <div className="weight-rows">
-            {(["vacancy", "interstitial"] as const).map((key) => (
-              <label className="weight-row" key={key}>
-                <span className="weight-route"><strong>{probabilityLabels.get(key)}</strong></span>
-                <span className="weight-input-wrap"><span>P</span><input aria-label={probabilityLabels.get(key)} data-testid={`weight-${key}`} type="number" min={0} max={1} step={0.01} value={weights[key]} onChange={(event) => setWeights({ ...weights, [key]: number(event.target.value) })} /></span>
-              </label>
-            ))}
-          </div>
-        </section>
-        <section className="weight-section" aria-labelledby="multiplier-weights-title">
-          <div className="weight-section-heading">
-            <span>2</span>
-            <div>
-              <h3 id="multiplier-weights-title">Контур</h3>
-              <p>Первый и второй контуры в сумме должны давать 1.</p>
+            <div className="weight-groups multiplier-groups">
+              <div className="weight-group">
+                <div className="weight-group-heading"><h4>P(тип)</h4><p>Вакансия и межузлие в сумме должны давать 1.</p></div>
+                <div className="weight-rows">
+                  {group.typeKeys.map((key) => (
+                    <label className="weight-row" key={key}>
+                      <span className="weight-route"><strong>{probabilityLabels.get(key)}</strong></span>
+                      <span className="weight-input-wrap"><span>P</span><input aria-label={probabilityLabels.get(key)} data-testid={`weight-${key.replaceAll("_", "-")}`} type="number" min={0} max={1} step={0.01} value={weights[key]} onChange={(event) => setWeights({ ...weights, [key]: number(event.target.value) })} /></span>
+                    </label>
+                  ))}
+                </div>
+              </div>
+              <div className="weight-group">
+                <div className="weight-group-heading"><h4>P(контур)</h4><p>Первый и второй контуры в сумме должны давать 1.</p></div>
+                <div className="weight-rows">
+                  {group.shellKeys.map((key) => (
+                    <label className="weight-row" key={key}>
+                      <span className="weight-route"><strong>{probabilityLabels.get(key)}</strong></span>
+                      <span className="weight-input-wrap"><span>P</span><input aria-label={probabilityLabels.get(key)} data-testid={`weight-${key.replaceAll("_", "-")}`} type="number" min={0} max={1} step={0.01} value={weights[key]} onChange={(event) => setWeights({ ...weights, [key]: number(event.target.value) })} /></span>
+                    </label>
+                  ))}
+                </div>
+              </div>
+              <div className="weight-group">
+                <div className="weight-group-heading"><h4>P(положение)</h4><p>Граничные позиции считаются внутренними.</p></div>
+                <div className="weight-rows">
+                  {group.positionKeys.map((key) => (
+                    <label className="weight-row" key={key}>
+                      <span className="weight-route"><strong>{key.endsWith("_inside") ? "Внутри металла или на границе" : "Снаружи металла"}</strong></span>
+                      <span className="weight-input-wrap"><span>P</span><input aria-label={probabilityLabels.get(key)} data-testid={`weight-${key.replaceAll("_", "-")}`} type="number" min={0} max={1} step={0.01} value={weights[key]} onChange={(event) => setWeights({ ...weights, [key]: number(event.target.value) })} /></span>
+                    </label>
+                  ))}
+                </div>
+              </div>
             </div>
-          </div>
+          </section>
+        ))}
+        <section className="weight-section" aria-labelledby="external-position-probabilities-title">
+          <div className="weight-section-heading"><span>3</span><div><h3 id="external-position-probabilities-title">Начальная позиция: снаружи металла</h3><p>Вероятность входа по умолчанию равна 0, но её можно изменить.</p></div></div>
           <div className="weight-rows">
-            {(["shell_r1", "shell_r2"] as const).map((key) => (
-              <label className="weight-row" key={key}>
-                <span className="weight-route"><strong>{probabilityLabels.get(key)}</strong></span>
-                <span className="weight-input-wrap"><span>P</span><input aria-label={probabilityLabels.get(key)} data-testid={`weight-${key.replaceAll("_", "-")}`} type="number" min={0} max={1} step={0.01} value={weights[key]} onChange={(event) => setWeights({ ...weights, [key]: number(event.target.value) })} /></span>
-              </label>
-            ))}
-          </div>
-        </section>
-        <section className="weight-section" aria-labelledby="position-probabilities-title">
-          <div className="weight-section-heading"><span>3</span><div><h3 id="position-probabilities-title">Положение относительно металла</h3><p>Граничные позиции считаются внутренними.</p></div></div>
-          <div className="weight-groups multiplier-groups">
-            <div className="weight-group"><div className="weight-group-heading"><h4>Атом находится внутри металла</h4></div><div className="weight-rows">
-              <label className="weight-row"><span className="weight-route"><strong>Внутри металла</strong></span><span className="weight-input-wrap"><span>P</span><input aria-label="Внутри металла для внутреннего атома" data-testid="probability-inside" type="number" min={0} max={1} step={0.01} value={1 - weights.external} onChange={(event) => setWeights({ ...weights, external: 1 - number(event.target.value) })} /></span></label>
-              <label className="weight-row"><span className="weight-route"><strong>Снаружи металла</strong></span><span className="weight-input-wrap"><span>P</span><input aria-label={probabilityLabels.get("external")} data-testid="weight-external" type="number" min={0} max={1} step={0.01} value={weights.external} onChange={(event) => setWeights({ ...weights, external: number(event.target.value) })} /></span></label>
-            </div></div>
-            <div className="weight-group"><div className="weight-group-heading"><h4>Атом находится снаружи металла</h4><p>Вероятность входа по умолчанию равна 0, но её можно изменить.</p></div><div className="weight-rows">
-              <label className="weight-row"><span className="weight-route"><strong>Внутрь металла</strong></span><span className="weight-input-wrap"><span>P</span><input aria-label={probabilityLabels.get("external_metal")} data-testid="weight-external-metal" type="number" min={0} max={1} step={0.01} value={weights.external_metal} onChange={(event) => setWeights({ ...weights, external_metal: number(event.target.value), external_external: 1 - number(event.target.value) })} /></span></label>
-              <label className="weight-row"><span className="weight-route"><strong>Снаружи металла</strong></span><span className="weight-input-wrap"><span>P</span><input aria-label="Снаружи металла для внешнего атома" data-testid="probability-external-outside" type="number" min={0} max={1} step={0.01} value={1 - weights.external_metal} onChange={(event) => setWeights({ ...weights, external_metal: 1 - number(event.target.value), external_external: number(event.target.value) })} /></span></label>
-            </div></div>
+            <label className="weight-row"><span className="weight-route"><strong>Внутрь металла</strong></span><span className="weight-input-wrap"><span>P</span><input aria-label={probabilityLabels.get("external_metal")} data-testid="weight-external-metal" type="number" min={0} max={1} step={0.01} value={weights.external_metal} onChange={(event) => setWeights({ ...weights, external_metal: number(event.target.value), external_external: 1 - number(event.target.value) })} /></span></label>
+            <label className="weight-row"><span className="weight-route"><strong>Снаружи металла</strong></span><span className="weight-input-wrap"><span>P</span><input aria-label="Снаружи металла для внешнего атома" data-testid="probability-external-outside" type="number" min={0} max={1} step={0.01} value={1 - weights.external_metal} onChange={(event) => setWeights({ ...weights, external_metal: 1 - number(event.target.value), external_external: number(event.target.value) })} /></span></label>
           </div>
         </section>
       </details>

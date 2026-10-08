@@ -35,10 +35,33 @@ export class ApplicationRequestError extends Error {
     public readonly applicationError: ApplicationError,
     public readonly status = 500,
   ) {
-    super(applicationError.message);
+    super(requestErrorMessage(applicationError));
     this.name = "ApplicationRequestError";
   }
 }
+
+const requestErrorMessage = (error: ApplicationError) => {
+  const validationErrors = Array.isArray(error.details?.errors)
+    ? (error.details.errors as Array<Record<string, unknown>>)
+    : [];
+  if (error.code !== "VALIDATION_ERROR" || validationErrors.length === 0) {
+    return error.message;
+  }
+  const formatted = validationErrors.slice(0, 3).map((item) => {
+    const location = Array.isArray(item.loc)
+      ? item.loc.filter((part) => part !== "body").join(".")
+      : "параметр";
+    return `${location}: ${String(item.msg ?? "некорректное значение")}`;
+  });
+  const versionMismatch = validationErrors.some(
+    (item) => item.type === "extra_forbidden",
+  );
+  return `${error.message}: ${formatted.join("; ")}.${
+    versionMismatch
+      ? " Сервер не поддерживает поля интерфейса — перезапустите сервер приложения."
+      : ""
+  }`;
+};
 
 type RequestOptions<T> = {
   method?: "GET" | "POST" | "PATCH" | "DELETE";
@@ -52,17 +75,23 @@ const requestJson = async <T>(
 ): Promise<T> => {
   const response = await fetch(path, {
     method,
-    headers: body === undefined ? undefined : { "Content-Type": "application/json" },
+    headers:
+      body === undefined ? undefined : { "Content-Type": "application/json" },
     body: body === undefined ? undefined : JSON.stringify(body),
   });
   const payload = await response.json().catch(() => null);
   if (!response.ok) {
     try {
-      throw new ApplicationRequestError(decodeApplicationError(payload), response.status);
+      throw new ApplicationRequestError(
+        decodeApplicationError(payload),
+        response.status,
+      );
     } catch (error) {
       if (error instanceof ApplicationRequestError) throw error;
       const record = payload as { message?: unknown; detail?: unknown } | null;
-      throw new Error(String(record?.message ?? record?.detail ?? "Request failed"));
+      throw new Error(
+        String(record?.message ?? record?.detail ?? "Request failed"),
+      );
     }
   }
   return decode(payload);
@@ -76,10 +105,7 @@ const revisionBody = (expectedRevision: number) => ({
 export type SimulationSubscription = { close: () => void };
 
 export type InitializationMode =
-  | "ordered"
-  | "random_defective"
-  | "explicit_defective"
-  | "symmetric_defective";
+  "ordered" | "random_defective" | "explicit_defective" | "symmetric_defective";
 
 export type OperationWeightsInput = Partial<{
   lattice_vacancy: number;
@@ -97,6 +123,18 @@ export type OperationWeightsInput = Partial<{
   vacancy: number;
   interstitial: number;
   external: number;
+  from_lattice_vacancy: number;
+  from_lattice_interstitial: number;
+  from_lattice_shell_r1: number;
+  from_lattice_shell_r2: number;
+  from_lattice_inside: number;
+  from_lattice_outside: number;
+  from_interstitial_vacancy: number;
+  from_interstitial_interstitial: number;
+  from_interstitial_shell_r1: number;
+  from_interstitial_shell_r2: number;
+  from_interstitial_inside: number;
+  from_interstitial_outside: number;
 }>;
 
 export type SimulationCreateInput = {
@@ -124,7 +162,9 @@ export type PreparationEditInput =
   | { action: "boundary"; contour: [number, number][] };
 
 export const simulationApi = {
-  create(configuration: SimulationCreateInput): Promise<SimulationCreatedResponse> {
+  create(
+    configuration: SimulationCreateInput,
+  ): Promise<SimulationCreatedResponse> {
     return requestJson("/api/simulations", {
       method: "POST",
       body: { schema_version: 1, ...configuration },
@@ -143,7 +183,11 @@ export const simulationApi = {
       decode: decodeStepResponse,
     });
   },
-  configure(simulationId: string, revision: number, patch: ConfigurationPatchInput) {
+  configure(
+    simulationId: string,
+    revision: number,
+    patch: ConfigurationPatchInput,
+  ) {
     return requestJson(`/api/simulations/${simulationId}/configuration`, {
       method: "PATCH",
       body: { schema_version: 1, expected_revision: revision, ...patch },
@@ -170,12 +214,29 @@ export const simulationApi = {
   },
   summaryCommand(
     simulationId: string,
-    command: "start" | "run" | "pause" | "stop" | "error/acknowledge",
+    command: "start" | "pause" | "stop" | "error/acknowledge",
     revision: number,
   ): Promise<SimulationSummary> {
     return requestJson(`/api/simulations/${simulationId}/${command}`, {
       method: "POST",
       body: revisionBody(revision),
+      decode: decodeSimulationSummary,
+    });
+  },
+  run(
+    simulationId: string,
+    revision: number,
+    mode: "visual" | "fast",
+    intervalMs: number,
+  ): Promise<SimulationSummary> {
+    return requestJson(`/api/simulations/${simulationId}/run`, {
+      method: "POST",
+      body: {
+        schema_version: 1,
+        expected_revision: revision,
+        mode,
+        interval_ms: intervalMs,
+      },
       decode: decodeSimulationSummary,
     });
   },
@@ -198,16 +259,25 @@ export const simulationApi = {
     });
   },
   diagnose(simulationId: string, atomId: number, qTest: number) {
-    return requestJson(`/api/simulations/${simulationId}/diagnostics/probabilities`, {
-      method: "POST",
-      body: { schema_version: 1, atom_id: atomId, q_test: qTest },
-      decode: decodeProbabilityOverlay,
-    });
+    return requestJson(
+      `/api/simulations/${simulationId}/diagnostics/probabilities`,
+      {
+        method: "POST",
+        body: { schema_version: 1, atom_id: atomId, q_test: qTest },
+        decode: decodeProbabilityOverlay,
+      },
+    );
   },
-  destinations(simulationId: string, atomId: number): Promise<DestinationsResponse> {
-    return requestJson(`/api/simulations/${simulationId}/atoms/${atomId}/destinations`, {
-      decode: decodeDestinationsResponse,
-    });
+  destinations(
+    simulationId: string,
+    atomId: number,
+  ): Promise<DestinationsResponse> {
+    return requestJson(
+      `/api/simulations/${simulationId}/atoms/${atomId}/destinations`,
+      {
+        decode: decodeDestinationsResponse,
+      },
+    );
   },
   events(simulationId: string): Promise<EventPage> {
     return requestJson(`/api/simulations/${simulationId}/events?limit=500`, {
@@ -237,12 +307,17 @@ export const simulationApi = {
     });
   },
   deleteProject(projectId: string) {
-    return requestJson(`/api/projects/${encodeURIComponent(projectId)}?confirm=true`, {
-      method: "DELETE",
-      decode: decodeProjectStatus,
-    });
+    return requestJson(
+      `/api/projects/${encodeURIComponent(projectId)}?confirm=true`,
+      {
+        method: "DELETE",
+        decode: decodeProjectStatus,
+      },
+    );
   },
-  createExperiment(configuration: Record<string, unknown>): Promise<ExperimentStatus> {
+  createExperiment(
+    configuration: Record<string, unknown>,
+  ): Promise<ExperimentStatus> {
     return requestJson("/api/experiments", {
       method: "POST",
       body: { schema_version: 1, ...configuration },
@@ -267,10 +342,15 @@ export const simulationApi = {
     });
   },
   async journal(simulationId: string): Promise<Blob> {
-    const response = await fetch(`/api/simulations/${simulationId}/journal.json`);
+    const response = await fetch(
+      `/api/simulations/${simulationId}/journal.json`,
+    );
     if (!response.ok) {
       const payload = await response.json().catch(() => null);
-      throw new ApplicationRequestError(decodeApplicationError(payload), response.status);
+      throw new ApplicationRequestError(
+        decodeApplicationError(payload),
+        response.status,
+      );
     }
     return response.blob();
   },
@@ -281,7 +361,10 @@ export const simulationApi = {
     );
     if (!response.ok) {
       const payload = await response.json().catch(() => null);
-      throw new ApplicationRequestError(decodeApplicationError(payload), response.status);
+      throw new ApplicationRequestError(
+        decodeApplicationError(payload),
+        response.status,
+      );
     }
   },
   subscribe(
