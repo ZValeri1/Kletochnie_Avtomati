@@ -464,6 +464,73 @@ test("a snapshot updates only its own simulation state", async () => {
   expect(store.getSimulation("sim-b").current_snapshot.revision).toBe(1);
 });
 
+test("a fast-mode event advances the visible act without waiting for a snapshot", async () => {
+  const modulePath = "../../../src/store/simulationStore.ts";
+  const { createSimulationStore } = await import(modulePath);
+  const store = createSimulationStore();
+  const paused = fixture("simulation_snapshot.json");
+  const event = fixture("simulation_event.json");
+
+  store.applySnapshot(paused);
+  store.applySummary({
+    schema_version: 1,
+    simulation_id: paused.simulation_id,
+    status: "RUNNING",
+    revision: paused.revision + 1,
+    run_mode: "fast",
+  });
+  store.applySnapshot(
+    {
+      ...paused,
+      status: "RUNNING",
+      revision: paused.revision + 1,
+    },
+    { allowEqual: true },
+  );
+
+  const fastEvent = {
+    ...event,
+    event_id: "fast-event-12",
+    revision: paused.revision + 8,
+    act_number: event.act_number + 8,
+    metrics_after: {
+      n_correct: 12,
+      n_v: 2,
+      n_i: 1,
+      n_as: 1,
+      d: 4,
+      s: 0.75,
+    },
+  };
+  expect(
+    store.applyStreamMessage({
+      schema_version: 1,
+      message_id: 12,
+      simulation_id: paused.simulation_id,
+      revision: fastEvent.revision,
+      type: "event",
+      event: fastEvent,
+    }),
+  ).toBe(true);
+
+  const state = store.getSimulation(paused.simulation_id);
+  expect(state.current_snapshot).toMatchObject({
+    status: "RUNNING",
+    revision: fastEvent.revision,
+    metrics: fastEvent.metrics_after,
+  });
+  expect(state.summary).toMatchObject({
+    status: "RUNNING",
+    revision: fastEvent.revision,
+    run_mode: "fast",
+  });
+  expect(state.metrics.points.at(-1)).toMatchObject({
+    revision: fastEvent.revision,
+    act_number: fastEvent.act_number,
+    ...fastEvent.metrics_after,
+  });
+});
+
 test("renderer failure preserves controls and the last valid snapshot", async () => {
   const modulePath = "../../../src/store/simulationStore.ts";
   const { createSimulationStore } = await import(modulePath);

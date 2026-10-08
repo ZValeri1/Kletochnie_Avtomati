@@ -153,6 +153,21 @@ export function createSimulationStore() {
             );
           }
         }
+        if (
+          state.summary.status === "RUNNING" &&
+          state.summary.run_mode === "fast" &&
+          state.current_snapshot
+        ) {
+          state.current_snapshot = {
+            ...state.current_snapshot,
+            revision: message.event.revision,
+            metrics: structuredClone(message.event.metrics_after),
+          };
+          state.summary = {
+            ...state.summary,
+            revision: message.event.revision,
+          };
+        }
         return true;
       }
       if (message.type === "status") {
