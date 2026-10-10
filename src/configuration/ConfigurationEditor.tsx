@@ -88,7 +88,10 @@ const randomDistributionLabels = {
   adatoms: "Атомы за контуром",
 } as const;
 
-const formValues = (snapshot?: SimulationSnapshot | null) => {
+const formValues = (
+  snapshot?: SimulationSnapshot | null,
+  method: "monte_carlo" | "cellular_automata" = "monte_carlo",
+) => {
   const configuration = snapshot?.configuration;
   return {
     mode: configuration?.dimensions.length === 3 ? "3d" as const : "2d" as const,
@@ -108,26 +111,31 @@ const formValues = (snapshot?: SimulationSnapshot | null) => {
       seed_sim: configuration.seed_sim,
     } : { seed_init: 41, seed_sim: 42 },
     qMax: configuration?.q_max_ev ?? 82,
-    qThr: configuration?.q_thr_ev ?? 20,
+    // CA default: displacement threshold of nickel E_d = 23 eV
+    // (Voskoboynikov 2020, p. 11; JNM 1994: Td(Ni) = 23 +/- 2 eV).
+    // MC default: 20 eV (teammate's model, unchanged).
+    qThr: configuration?.q_thr_ev ?? (method === "cellular_automata" ? 23 : 20),
     weights: { ...defaultWeights, ...configuration?.weights },
     random: { ...defaultRandom, ...configuration?.random_parameters },
   };
 };
 
 export function ConfigurationEditor({
+  method = "monte_carlo",
   onCreate,
   onConfigure,
   currentSnapshot,
   pending = false,
   serverError = "",
 }: {
+  method?: "monte_carlo" | "cellular_automata";
   onCreate: (configuration: SimulationCreateInput) => void;
   onConfigure?: (configuration: ConfigurationPatchInput) => void;
   currentSnapshot?: SimulationSnapshot | null;
   pending?: boolean;
   serverError?: string;
 }) {
-  const initial = formValues(currentSnapshot);
+  const initial = formValues(currentSnapshot, method);
   const [mode, setMode] = useState<"2d" | "3d">(initial.mode);
   const [dimensions, setDimensions] = useState(initial.dimensions);
   const [initializationMode, setInitializationMode] = useState<InitializationMode>(initial.initializationMode);
@@ -153,6 +161,13 @@ export function ConfigurationEditor({
     setWeights(next.weights);
     setRandom(next.random);
   }, [currentSnapshot?.simulation_id, configurationKey]);
+
+  // When switching method with no selected simulation, reset the threshold
+  // to the method default (CA: E_d(Ni) = 23 eV; MC: 20 eV).
+  useEffect(() => {
+    if (currentSnapshot) return;
+    setQThr(method === "cellular_automata" ? 23 : 20);
+  }, [method, currentSnapshot]);
 
   const setDimension = (index: number, value: number) =>
     setDimensions((current) => current.map((item, i) => i === index ? value : item));
@@ -213,7 +228,12 @@ export function ConfigurationEditor({
   const canConfigure = currentSnapshot?.status === "PREPARATION" && !currentSnapshot.config_locked;
   return (
     <section className="panel configuration">
-      <h2>{canConfigure ? "Конфигурация выбранной симуляции" : "Новая конфигурация"}</h2>
+      <h2>
+        {canConfigure ? "Конфигурация выбранной симуляции" : "Новая конфигурация"}
+        <span className="method-badge">
+          {method === "cellular_automata" ? "Клеточные автоматы" : "Монте-Карло"}
+        </span>
+      </h2>
       <div className="form-grid">
         <label>Размерность модели<select data-testid="dimension-mode" value={mode} onChange={(event) => setMode(event.target.value as "2d" | "3d")}><option value="2d">Двумерная (2D)</option><option value="3d">Трёхмерная (3D)</option></select></label>
         {dimensions.slice(0, mode === "2d" ? 2 : 3).map((value, index) => (
@@ -229,10 +249,31 @@ export function ConfigurationEditor({
         <label>Зерно генератора начальной структуры<input data-testid="seed-init" type="number" value={seeds.seed_init} onChange={(event) => setSeeds({ ...seeds, seed_init: number(event.target.value) })} /></label>
         <label>Зерно генератора хода симуляции<input data-testid="seed-sim" type="number" value={seeds.seed_sim} onChange={(event) => setSeeds({ ...seeds, seed_sim: number(event.target.value) })} /></label>
         <label>Максимальная переданная энергия, эВ<input type="number" min={0} value={qMax} onChange={(event) => setQMax(number(event.target.value))} /></label>
-        <label>Порог активации перехода, эВ<input data-testid="q-threshold" type="number" min={0} value={qThr} onChange={(event) => setQThr(number(event.target.value))} /></label>
+        <label>
+          {method === "cellular_automata"
+            ? "Порог смещения E_d (никель), эВ"
+            : "Порог активации перехода, эВ"}
+          <input data-testid="q-threshold" type="number" min={0} value={qThr} onChange={(event) => setQThr(number(event.target.value))} />
+        </label>
       </div>
       <details className="weights-editor">
-        <summary>Вероятности переходов</summary>
+        <summary>
+          {method === "cellular_automata"
+            ? "Правила переходов (веса операций)"
+            : "Вероятности переходов"}
+        </summary>
+        {method === "cellular_automata" && (
+          <div className="weights-intro">
+            <strong>Детерминированный выбор перехода</strong>
+            <p>
+              В методе клеточных автоматов переход выбирается не случайно, а
+              детерминированно: из всех допустимых назначений выбирается
+              позиция с максимальным суммарным весом (принцип минимальной
+              энергии). Веса ниже задают предпочтительность операций, но
+              окончательный выбор однозначен при фиксированном состоянии.
+            </p>
+          </div>
+        )}
         <div className="weights-intro">
           <strong>Вероятность конкретной свободной позиции</strong>
           <p>

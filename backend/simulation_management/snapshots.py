@@ -185,6 +185,7 @@ class SnapshotFactory:
             field_dimensions=topology.movement_field.dimensions,
             contour=configuration.get("contour"),
             profile=configuration["profile"],
+            method=configuration.get("method", "monte_carlo"),
             initialization_mode=configuration["initialization_mode"],
             n_v=configuration.get("n_v", 0),
             n_i=configuration.get("n_i", 0),

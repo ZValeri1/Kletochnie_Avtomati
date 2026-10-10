@@ -193,6 +193,7 @@ class SimulationConfiguration(BaseModel):
     field_dimensions: tuple[int, ...]
     contour: tuple[tuple[int, int], ...] | None
     profile: Literal["fe_co60_physical"]
+    method: Literal["monte_carlo", "cellular_automata"] = "monte_carlo"
     initialization_mode: Literal[
         "ordered", "random_defective", "explicit_defective", "symmetric_defective"
     ]

@@ -343,7 +343,7 @@ class SimulationManager:
             raise RevisionConflictError("Revision conflict")
         allowed = {
             "initialization_mode", "n_v", "n_i", "n_as", "random_parameters",
-            "seed_init", "q_max_ev", "q_thr_ev", "weights",
+            "seed_init", "q_max_ev", "q_thr_ev", "weights", "method",
         }
         if not isinstance(initialization, dict) or set(initialization) - allowed:
             raise PreparationCommandError("EDIT_NOT_ALLOWED")

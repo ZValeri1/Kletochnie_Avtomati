@@ -36,6 +36,7 @@ export type SimulationSnapshot = {
     field_dimensions: number[];
     contour: [number, number][] | null;
     profile: "fe_co60_physical";
+    method?: "monte_carlo" | "cellular_automata";
     initialization_mode:
       | "ordered"
       | "random_defective"
@@ -477,6 +478,9 @@ export function decodeSimulationSnapshot(value: unknown): SimulationSnapshot {
       (item) => Number.isInteger(item) && Number(item) >= 2,
     ) ||
     configuration.profile !== "fe_co60_physical" ||
+    (configuration.method !== undefined &&
+      configuration.method !== "monte_carlo" &&
+      configuration.method !== "cellular_automata") ||
     ![
       "ordered",
       "random_defective",

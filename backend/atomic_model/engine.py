@@ -5,6 +5,12 @@ from dataclasses import dataclass
 from functools import lru_cache
 
 from backend.atomic_model.errors import InvalidEventError, StateInvariantError, TopologyError
+from backend.atomic_model.ca_rules import (
+    deterministic_choose,
+    cascade_chain,
+    photonuclear_channel,
+    MIN_PHOTONUCLEAR_THRESHOLD_EV,
+)
 from backend.atomic_model.event_executor import EventExecutor
 from backend.atomic_model.events import (
     EventEngine,
@@ -74,26 +80,71 @@ class SimulationEngine:
             q_n = source.configuration["q_max_ev"] * random_source.betavariate(1, 4)
             q_thr = source.configuration["q_thr_ev"]
             event_engine = EventEngine(source.configuration)
+            execution = None
+            candidate = None
             if q_n < q_thr:
                 state = source.transition_copy()
                 state.act_number += 1
                 state.revision += 1
-                candidate = None
                 reason = "BELOW_THRESHOLD"
             else:
                 outcomes = event_engine.probabilities(
                     topology, source, atom_id, q_n
                 )
-                candidate = event_engine.choose(outcomes, atom_id, random_source)
-                if candidate is None:
+                if source.configuration.get("method") == "cellular_automata":
+                    # R4-R7: photonuclear reactions at Q >= 6.29 MeV
+                    # (thresholds from Zaman 2018 Table 2 + AME2020)
+                    pn_channel = (
+                        photonuclear_channel(q_n)
+                        if q_n >= MIN_PHOTONUCLEAR_THRESHOLD_EV
+                        else None
+                    )
+                    if pn_channel is not None:
+                        channel_name, product, emitted, rule = pn_channel
+                        candidate = deterministic_choose(outcomes, atom_id)
+                        if candidate is not None:
+                            execution = self.executor.execute(
+                                topology, source, candidate
+                            )
+                            reason = f"PHOTONUCLEAR_{rule}"
+                        else:
+                            reason = "NO_POSITIVE_CANDIDATE"
+                    else:
+                        # R0-R3: lattice damage (eV scale)
+                        candidate = deterministic_choose(outcomes, atom_id)
+                        # R2-R3: cascade for Frenkel pair at Q >= 2*E_d
+                        # (Kinchin-Pease hard-sphere model, NRT g=0.8)
+                        if (
+                            candidate is not None
+                            and candidate.operation == "lattice_interstitial"
+                            and q_n >= 2 * q_thr
+                        ):
+                            candidates = cascade_chain(
+                                q_n, topology, source, atom_id, candidate
+                            )
+                            execution = self.executor.execute_cascade(
+                                topology, source, candidates
+                            )
+                            reason = "CASCADE_APPLIED"
+                        elif candidate is not None:
+                            execution = self.executor.execute(topology, source, candidate)
+                            reason = "APPLIED"
+                        else:
+                            reason = "NO_POSITIVE_CANDIDATE"
+                else:
+                    candidate = event_engine.choose(outcomes, atom_id, random_source)
+                    if candidate is not None:
+                        execution = self.executor.execute(topology, source, candidate)
+                        reason = "APPLIED"
+                    else:
+                        reason = "NO_POSITIVE_CANDIDATE"
+
+                if execution is None:
                     state = source.transition_copy()
                     state.act_number += 1
                     state.revision += 1
-                    reason = "NO_POSITIVE_CANDIDATE"
                 else:
-                    execution = self.executor.execute(topology, source, candidate)
                     state = execution.state
-                    reason = "APPLIED"
                     if len(state.atoms) != len(source.atoms):
                         raise InvalidEventError("INVARIANT_VIOLATION")
             state.validate(topology)
@@ -127,8 +178,8 @@ class SimulationEngine:
                 position_weight=candidate.position_weight if candidate else 0.0,
                 total_weight=candidate.total_weight if candidate else 0.0,
                 probability=candidate.probability if candidate else 1.0,
-                affected_atom_ids=(atom_id,) if candidate else (),
-                affected_site_ids=(source_site, destination_site) if candidate else (),
+                affected_atom_ids=execution.affected_atom_ids if execution else (),
+                affected_site_ids=execution.affected_site_ids if execution else (),
                 metrics_before=metrics_before.model_dump(),
                 metrics_after=metrics.model_dump(),
             )
@@ -298,8 +349,9 @@ class SimulationEngine:
         config = dict(configuration)
         config["dimensions"] = list(config.get("dimensions", (30, 30)))
         config.setdefault("profile", "fe_co60_physical")
+        config.setdefault("method", "monte_carlo")
         allowed = {
-            "dimensions", "contour", "profile", "initialization_mode",
+            "dimensions", "contour", "profile", "method", "initialization_mode",
             "n_v", "n_i", "n_as", "random_parameters", "seed_init", "seed_sim",
             "q_max_ev", "q_thr_ev", "weights",
         }
@@ -310,7 +362,14 @@ class SimulationEngine:
         if config.get("seed_init") is None:
             config["seed_init"] = secrets.randbits(63)
         config.setdefault("q_max_ev", 82.0)
-        config.setdefault("q_thr_ev", 20.0)
+        # Displacement threshold default depends on the method:
+        #   cellular_automata -> E_d(Ni) = 23 eV (experimental value,
+        #       Voskoboynikov 2020 FMM 121(1) p.11; JNM 1994 Td(Ni)=23+/-2 eV)
+        #   monte_carlo -> 20 eV (unchanged, teammate's model)
+        default_q_thr = (
+            23.0 if config["method"] == "cellular_automata" else 20.0
+        )
+        config.setdefault("q_thr_ev", default_q_thr)
         config.setdefault("weights", {})
         if not isinstance(config["dimensions"], list) or len(config["dimensions"]) not in (2, 3):
             raise ValueError("dimensions must contain two or three axes")
@@ -318,6 +377,8 @@ class SimulationEngine:
             raise ValueError("each dimension must contain at least two nodes")
         if config["profile"] != "fe_co60_physical":
             raise ValueError("Unsupported profile")
+        if config["method"] not in {"monte_carlo", "cellular_automata"}:
+            raise ValueError("Unsupported method")
         if min(
             config["q_max_ev"],
             config["q_thr_ev"],
