@@ -110,7 +110,12 @@ const formValues = (
       seed_init: configuration.seed_init,
       seed_sim: configuration.seed_sim,
     } : { seed_init: 41, seed_sim: 42 },
-    qMax: configuration?.q_max_ev ?? 82,
+    profile: configuration?.profile ?? "fe_co60_physical",
+    // ni_photonuclear preset: 55 MeV (Zaman 2018 bremsstrahlung end-point);
+    // fe_co60_physical: 82 eV (unchanged).
+    qMax: configuration?.q_max_ev ?? (
+      configuration?.profile === "ni_photonuclear" ? 55e6 : 82
+    ),
     // CA default: displacement threshold of nickel E_d = 23 eV
     // (Voskoboynikov 2020, p. 11; JNM 1994: Td(Ni) = 23 +/- 2 eV).
     // MC default: 20 eV (teammate's model, unchanged).
@@ -141,6 +146,7 @@ export function ConfigurationEditor({
   const [initializationMode, setInitializationMode] = useState<InitializationMode>(initial.initializationMode);
   const [counts, setCounts] = useState(initial.counts);
   const [seeds, setSeeds] = useState(initial.seeds);
+  const [profile, setProfile] = useState<"fe_co60_physical" | "ni_photonuclear">(initial.profile);
   const [qMax, setQMax] = useState(initial.qMax);
   const [qThr, setQThr] = useState(initial.qThr);
   const [weights, setWeights] = useState(initial.weights);
@@ -156,6 +162,7 @@ export function ConfigurationEditor({
     setInitializationMode(next.initializationMode);
     setCounts(next.counts);
     setSeeds(next.seeds);
+    setProfile(next.profile);
     setQMax(next.qMax);
     setQThr(next.qThr);
     setWeights(next.weights);
@@ -163,11 +170,23 @@ export function ConfigurationEditor({
   }, [currentSnapshot?.simulation_id, configurationKey]);
 
   // When switching method with no selected simulation, reset the threshold
-  // to the method default (CA: E_d(Ni) = 23 eV; MC: 20 eV).
+  // to the method default (CA: E_d(Ni) = 23 eV; MC: 20 eV). MC always uses
+  // the frozen fe_co60_physical profile (82 eV).
   useEffect(() => {
     if (currentSnapshot) return;
     setQThr(method === "cellular_automata" ? 23 : 20);
+    if (method === "monte_carlo") {
+      setProfile("fe_co60_physical");
+      setQMax(82);
+    }
   }, [method, currentSnapshot]);
+
+  // Profile switch presets Q_max: ni_photonuclear -> 55 MeV (Zaman 2018
+  // bremsstrahlung end-point, PAL experiment), fe_co60_physical -> 82 eV.
+  const changeProfile = (next: "fe_co60_physical" | "ni_photonuclear") => {
+    setProfile(next);
+    setQMax(next === "ni_photonuclear" ? 55e6 : 82);
+  };
 
   const setDimension = (index: number, value: number) =>
     setDimensions((current) => current.map((item, i) => i === index ? value : item));
@@ -211,6 +230,7 @@ export function ConfigurationEditor({
       ...counts,
       random_parameters: initializationMode === "random_defective" ? random : undefined,
       ...seeds,
+      profile: method === "cellular_automata" ? profile : "fe_co60_physical",
       q_max_ev: qMax,
       q_thr_ev: qThr,
       weights,
@@ -248,7 +268,24 @@ export function ConfigurationEditor({
         ))}
         <label>Зерно генератора начальной структуры<input data-testid="seed-init" type="number" value={seeds.seed_init} onChange={(event) => setSeeds({ ...seeds, seed_init: number(event.target.value) })} /></label>
         <label>Зерно генератора хода симуляции<input data-testid="seed-sim" type="number" value={seeds.seed_sim} onChange={(event) => setSeeds({ ...seeds, seed_sim: number(event.target.value) })} /></label>
-        <label>Максимальная переданная энергия, эВ<input type="number" min={0} value={qMax} onChange={(event) => setQMax(number(event.target.value))} /></label>
+        {method === "cellular_automata" && (
+          <label className="wide-field">Физический профиль
+            <select
+              data-testid="profile-select"
+              value={profile}
+              onChange={(event) => changeProfile(event.target.value as "fe_co60_physical" | "ni_photonuclear")}
+            >
+              <option value="fe_co60_physical">Повреждение решётки — Co-60, Q_max = 82 эВ (R0–R3)</option>
+              <option value="ni_photonuclear">Фотоядерные реакции — 55 МэВ (R4–R7, Zaman 2018)</option>
+            </select>
+          </label>
+        )}
+        <label>
+          {method === "cellular_automata" && profile === "ni_photonuclear"
+            ? "Максимальная переданная энергия, эВ (55 МэВ = 5.5·10⁷)"
+            : "Максимальная переданная энергия, эВ"}
+          <input data-testid="q-max" type="number" min={0} value={qMax} onChange={(event) => setQMax(number(event.target.value))} />
+        </label>
         <label>
           {method === "cellular_automata"
             ? "Порог смещения E_d (никель), эВ"
@@ -267,10 +304,13 @@ export function ConfigurationEditor({
             <strong>Детерминированный выбор перехода</strong>
             <p>
               В методе клеточных автоматов переход выбирается не случайно, а
-              детерминированно: из всех допустимых назначений выбирается
-              позиция с максимальным суммарным весом (принцип минимальной
-              энергии). Веса ниже задают предпочтительность операций, но
-              окончательный выбор однозначен при фиксированном состоянии.
+              детерминированно: сначала по приоритету операции (рекомбинация →
+              пара Френкеля → переход в вакансию → миграция → поверхностные
+              процессы), затем по контуру (первый раньше второго) и ключу
+              позиции. Вероятности ниже работают не как шансы, а как
+              переключатели разрешения: значение 0 полностью запрещает
+              соответствующий переход, любое значение больше 0 — разрешает,
+              а величина на выбор не влияет.
             </p>
           </div>
         )}

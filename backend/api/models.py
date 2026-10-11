@@ -72,7 +72,7 @@ class SimulationCreateRequest(VersionedRequest):
     contour: list[tuple[int, int]] | None = None
     seed_init: int | None = None
     seed_sim: int | None = None
-    profile: Literal["fe_co60_physical"] = "fe_co60_physical"
+    profile: Literal["fe_co60_physical", "ni_photonuclear"] = "fe_co60_physical"
     method: Literal["monte_carlo", "cellular_automata"] = "monte_carlo"
     q_max_ev: float | None = Field(default=None, ge=0)
     # None lets the engine apply the method-specific default:
@@ -96,7 +96,7 @@ class ConfigurationPatchRequest(VersionedRequest):
     random_parameters: RandomInitializationParameters | None = None
     seed_init: int | None = None
     seed_sim: int | None = None
-    profile: Literal["fe_co60_physical"] | None = None
+    profile: Literal["fe_co60_physical", "ni_photonuclear"] | None = None
     method: Literal["monte_carlo", "cellular_automata"] | None = None
     q_max_ev: float | None = Field(default=None, ge=0)
     q_thr_ev: float | None = Field(default=None, ge=0)

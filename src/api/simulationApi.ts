@@ -147,7 +147,7 @@ export type SimulationCreateInput = {
   contour?: [number, number][] | null;
   seed_init: number;
   seed_sim: number;
-  profile?: "fe_co60_physical";
+  profile?: "fe_co60_physical" | "ni_photonuclear";
   method?: "monte_carlo" | "cellular_automata";
   q_max_ev: number;
   q_thr_ev: number;

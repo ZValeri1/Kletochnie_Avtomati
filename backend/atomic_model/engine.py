@@ -7,6 +7,7 @@ from functools import lru_cache
 from backend.atomic_model.errors import InvalidEventError, StateInvariantError, TopologyError
 from backend.atomic_model.ca_rules import (
     deterministic_choose,
+    choose_primary_displacement,
     cascade_chain,
     photonuclear_channel,
     MIN_PHOTONUCLEAR_THRESHOLD_EV,
@@ -111,16 +112,31 @@ class SimulationEngine:
                             reason = "NO_POSITIVE_CANDIDATE"
                     else:
                         # R0-R3: lattice damage (eV scale)
-                        candidate = deterministic_choose(outcomes, atom_id)
-                        # R2-R3: cascade for Frenkel pair at Q >= 2*E_d
-                        # (Kinchin-Pease hard-sphere model, NRT g=0.8)
+                        # R9 recombination > R1 nearest-vacancy preference
+                        # (author hypothesis) > Frenkel pair along the
+                        # irradiation direction d(act) = act mod 2n.
+                        candidate = choose_primary_displacement(
+                            outcomes, atom_id, topology, source.act_number
+                        )
+                        # R2-R3: cascade for a displacement at Q >= 2*E_d
+                        # (Kinchin-Pease hard-sphere model, NRT g=0.8);
+                        # direction changes at every collision and is bent
+                        # towards free vacancies (see ca_rules.cascade_chain).
                         if (
                             candidate is not None
-                            and candidate.operation == "lattice_interstitial"
+                            and candidate.operation in (
+                                "lattice_interstitial",
+                                "lattice_vacancy",
+                            )
                             and q_n >= 2 * q_thr
                         ):
                             candidates = cascade_chain(
-                                q_n, topology, source, atom_id, candidate
+                                q_n,
+                                topology,
+                                source,
+                                atom_id,
+                                candidate,
+                                act_number=source.act_number,
                             )
                             execution = self.executor.execute_cascade(
                                 topology, source, candidates
@@ -361,7 +377,14 @@ class SimulationEngine:
         config.setdefault("initialization_mode", "ordered")
         if config.get("seed_init") is None:
             config["seed_init"] = secrets.randbits(63)
-        config.setdefault("q_max_ev", 82.0)
+        # Q_max default depends on the profile:
+        #   ni_photonuclear -> 55 MeV (bremsstrahlung end-point energy of the
+        #       PAL experiment, Zaman 2018 Nucl. Phys. A 978, p.173-186) so
+        #       that photonuclear channels R4-R7 (thresholds 6.29-50.04 MeV,
+        #       Zaman 2018 Table 2 + AME2020) are reachable.
+        #   fe_co60_physical -> 82 eV (unchanged).
+        default_q_max = 55.0e6 if config["profile"] == "ni_photonuclear" else 82.0
+        config.setdefault("q_max_ev", default_q_max)
         # Displacement threshold default depends on the method:
         #   cellular_automata -> E_d(Ni) = 23 eV (experimental value,
         #       Voskoboynikov 2020 FMM 121(1) p.11; JNM 1994 Td(Ni)=23+/-2 eV)
@@ -375,10 +398,15 @@ class SimulationEngine:
             raise ValueError("dimensions must contain two or three axes")
         if any(not isinstance(size, int) or isinstance(size, bool) or size < 2 for size in config["dimensions"]):
             raise ValueError("each dimension must contain at least two nodes")
-        if config["profile"] != "fe_co60_physical":
+        if config["profile"] not in {"fe_co60_physical", "ni_photonuclear"}:
             raise ValueError("Unsupported profile")
         if config["method"] not in {"monte_carlo", "cellular_automata"}:
             raise ValueError("Unsupported method")
+        # ni_photonuclear (Q_max = 55 MeV, photonuclear channels R4-R7) is a
+        # cellular-automata-only profile; the Monte Carlo model is frozen and
+        # keeps using fe_co60_physical exclusively.
+        if config["profile"] == "ni_photonuclear" and config["method"] != "cellular_automata":
+            raise ValueError("ni_photonuclear profile requires cellular_automata method")
         if min(
             config["q_max_ev"],
             config["q_thr_ev"],

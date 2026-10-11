@@ -4,9 +4,16 @@ import pytest
 from backend.atomic_model.ca_rules import (
     CA_OPERATION_PRIORITY,
     NI_DISPLACEMENT_THRESHOLD_EV,
+    cascade_chain,
+    choose_primary_displacement,
     deterministic_choose,
+    irradiation_direction,
+    travel_vector,
+    _rotated,
 )
-from backend.atomic_model.events import ProbabilityOutcome
+from backend.atomic_model.events import EventCandidate, EventEngine, ProbabilityOutcome
+from backend.atomic_model.state import SimulationState
+from backend.atomic_model.topology import Topology
 
 
 def make_outcome(operation, shell=1, dest="lattice:1,1", selectable=True, total_weight=0.5):
@@ -233,3 +240,241 @@ class TestPhotonuclearChannels:
         """Minimum threshold is 6.29 MeV — 60Ni(γ,α)56Fe [AME2020]."""
         from backend.atomic_model.ca_rules import MIN_PHOTONUCLEAR_THRESHOLD_EV
         assert MIN_PHOTONUCLEAR_THRESHOLD_EV == 6.29e6
+
+
+class TestPhotonuclearProfile:
+    """Tests for the ni_photonuclear profile (R4-R7, CA-only).
+
+    Q_max = 55 MeV is the bremsstrahlung end-point energy of the PAL
+    experiment [Zaman 2018, Nucl. Phys. A 978, p. 173-186], chosen so that
+    all photonuclear channels with thresholds 6.29-50.04 MeV (Zaman 2018
+    Table 2 + AME2020) are reachable.
+    """
+
+    def test_ni_photonuclear_requires_cellular_automata(self):
+        """The photonuclear profile is CA-only; MC stays frozen."""
+        from backend.atomic_model.engine import SimulationEngine
+        with pytest.raises(ValueError, match="cellular_automata"):
+            SimulationEngine._validated_configuration({
+                "dimensions": [4, 4],
+                "profile": "ni_photonuclear",
+                "method": "monte_carlo",
+            })
+
+    def test_ni_photonuclear_default_q_max_is_55_mev(self):
+        from backend.atomic_model.engine import SimulationEngine
+        config = SimulationEngine._validated_configuration({
+            "dimensions": [4, 4],
+            "profile": "ni_photonuclear",
+            "method": "cellular_automata",
+        })
+        assert config["q_max_ev"] == 55.0e6
+        assert config["q_thr_ev"] == 23.0  # E_d(Ni) stays the lattice threshold
+
+    def test_fe_co60_physical_defaults_unchanged(self):
+        """MC and CA lattice-damage defaults must not change."""
+        from backend.atomic_model.engine import SimulationEngine
+        mc = SimulationEngine._validated_configuration({"dimensions": [4, 4]})
+        assert mc["profile"] == "fe_co60_physical"
+        assert mc["method"] == "monte_carlo"
+        assert mc["q_max_ev"] == 82.0
+        assert mc["q_thr_ev"] == 20.0
+
+        ca = SimulationEngine._validated_configuration({
+            "dimensions": [4, 4],
+            "method": "cellular_automata",
+        })
+        assert ca["profile"] == "fe_co60_physical"
+        assert ca["q_max_ev"] == 82.0
+        assert ca["q_thr_ev"] == 23.0
+
+    def test_unknown_profile_rejected(self):
+        from backend.atomic_model.engine import SimulationEngine
+        with pytest.raises(ValueError, match="Unsupported profile"):
+            SimulationEngine._validated_configuration({
+                "dimensions": [4, 4],
+                "profile": "bogus_profile",
+            })
+
+
+# ---------------------------------------------------------------------------
+# Rules of 2026-10-11: irradiation cycle, R1 vacancy preference,
+# cascade direction change / vacancy bias
+# ---------------------------------------------------------------------------
+
+CA_CONFIG = {
+    "dimensions": [5, 5],
+    "profile": "fe_co60_physical",
+    "method": "cellular_automata",
+    "q_max_ev": 82.0,
+    "q_thr_ev": 23.0,
+    "weights": {},
+}
+
+
+def ideal_state(dimensions=(5, 5)):
+    config = dict(CA_CONFIG, dimensions=list(dimensions))
+    topology = Topology.create(tuple(dimensions))
+    state = SimulationState.create_ideal(topology, config)
+    return topology, state, config
+
+
+def make_vacancy(state, site_key):
+    """Remove the atom occupying site_key, leaving a free vacancy."""
+    atom_id = state.occupied.pop(site_key)
+    del state.atoms[atom_id]
+    return atom_id
+
+
+class TestIrradiationCycle:
+    """Energy enters the material uniformly from all sides:
+    d(k) = k mod 2n (n = number of axes)."""
+
+    def test_2d_cycle_covers_four_faces(self):
+        seq = [irradiation_direction(k, (5, 5)) for k in range(8)]
+        assert seq[:4] == [(0, 0), (0, 1), (1, 0), (1, 1)]
+        assert seq[4:] == seq[:4]
+
+    def test_3d_cycle_covers_six_faces(self):
+        seq = [irradiation_direction(k, (4, 4, 4)) for k in range(6)]
+        assert len(set(seq)) == 6
+
+    def test_every_face_once_per_cycle(self):
+        from backend.atomic_model.ca_rules import irradiation_faces
+        dims = (6, 6)
+        faces = irradiation_faces(dims)
+        seq = [irradiation_direction(k, dims) for k in range(len(faces))]
+        assert sorted(seq) == sorted(faces)
+
+    def test_travel_vector_points_into_material(self):
+        assert travel_vector((0, 0), 2) == (1, 0)
+        assert travel_vector((0, 1), 2) == (-1, 0)
+        assert travel_vector((1, 0), 2) == (0, 1)
+        assert travel_vector((2, 1), 3) == (0, 0, -1)
+
+
+class TestPrimaryDisplacementRules:
+    """R9 > R1 nearest vacancy (author hypothesis) > Frenkel pair along
+    the irradiation direction."""
+
+    def test_vacancy_preference_over_interstitial(self):
+        topology, state, config = ideal_state()
+        src = "lattice:7,7"
+        vac = "lattice:8,7"
+        atom_id = state.occupied[src]
+        make_vacancy(state, vac)
+        outcomes = EventEngine(config).probabilities(topology, state, atom_id, 30.0)
+        candidate = choose_primary_displacement(outcomes, atom_id, topology, 0)
+        assert candidate.operation == "lattice_vacancy"
+        assert candidate.destination_key == vac
+        assert candidate.probability == 1.0
+
+    def test_nearest_shell_wins_for_vacancy(self):
+        topology, state, config = ideal_state()
+        src = "lattice:7,7"
+        atom_id = state.occupied[src]
+        make_vacancy(state, "lattice:8,7")      # shell r=1
+        make_vacancy(state, "lattice:9,7")      # shell r=2
+        outcomes = EventEngine(config).probabilities(topology, state, atom_id, 30.0)
+        candidate = choose_primary_displacement(outcomes, atom_id, topology, 0)
+        assert candidate.shell == 1
+        assert candidate.destination_key == "lattice:8,7"
+
+    def test_frenkel_pair_follows_irradiation_direction(self):
+        topology, state, config = ideal_state()
+        src = "lattice:7,7"
+        atom_id = state.occupied[src]
+        source_coordinate = topology.sites[src].coordinate
+        outcomes = EventEngine(config).probabilities(topology, state, atom_id, 30.0)
+        expected_signs = [(0, 1), (0, -1), (1, 1), (1, -1)]
+        for act, (axis, sign) in enumerate(expected_signs):
+            candidate = choose_primary_displacement(
+                outcomes, atom_id, topology, act
+            )
+            assert candidate.operation == "lattice_interstitial"
+            delta = (
+                topology.sites[candidate.destination_key].coordinate[axis]
+                - source_coordinate[axis]
+            )
+            assert delta * sign > 0
+
+    def test_recombination_still_highest_priority(self):
+        topology, state, config = ideal_state()
+        vac = "lattice:8,7"
+        src = "lattice:7,7"
+        atom_id = state.occupied[src]
+        make_vacancy(state, vac)
+        state.relocate(atom_id, "interstitial:7.5,7.5")
+        outcomes = EventEngine(config).probabilities(topology, state, atom_id, 30.0)
+        candidate = choose_primary_displacement(outcomes, atom_id, topology, 0)
+        assert candidate.operation == "interstitial_vacancy"
+        # The atom's own vacated site (lattice:7,7) is the nearest free
+        # vacancy: recombination into it annihilates the Frenkel pair.
+        assert candidate.destination_key == src
+
+
+class TestCascadeDirectionRules:
+    """R2-R3: direction changes at every collision; the vector is bent
+    towards free vacancies (author hypothesis)."""
+
+    def first_candidate(self, atom_id, source, dest):
+        return EventCandidate(
+            operation="lattice_interstitial",
+            atom_id=atom_id,
+            source_key=source,
+            destination_key=dest,
+            shell=1,
+            operation_weight=0.20,
+            shell_weight=0.75,
+            position_weight=0.20,
+            total_weight=0.20 * 0.75 * 0.20,
+            probability=1.0,
+        )
+
+    def test_cascade_bends_towards_vacancy(self):
+        topology, state, config = ideal_state()
+        vac = "lattice:8,6"
+        source = "lattice:6,6"
+        atom_id = state.occupied[source]
+        make_vacancy(state, vac)
+        first = self.first_candidate(atom_id, source, "interstitial:6.5,6.5")
+        candidates = cascade_chain(200.0, topology, state, atom_id, first, 0)
+        assert len(candidates) >= 2
+        second = candidates[1]
+        # The knocked-on atom fills the free vacancy: no new interstitial
+        assert second.operation == "lattice_vacancy"
+        assert second.destination_key == vac
+        assert second.probability == 1.0
+
+    def test_direction_changes_every_collision(self):
+        topology, state, config = ideal_state(dimensions=(6, 6))
+        source = "lattice:8,8"
+        atom_id = state.occupied[source]
+        first = self.first_candidate(atom_id, source, "interstitial:8.5,8.5")
+        candidates = cascade_chain(500.0, topology, state, atom_id, first, 0)
+        assert len(candidates) >= 3
+
+        def relative_vector(candidate):
+            src = topology.sites[candidate.source_key].coordinate
+            dst = topology.sites[candidate.destination_key].coordinate
+            return tuple(round(d - s, 1) for s, d in zip(src, dst))
+
+        vectors = [relative_vector(c) for c in candidates[1:]]
+        # Pre-2026-10-11 lexicographic ordering froze the direction; the
+        # rotation rule must produce more than one propagation vector.
+        assert len(set(vectors)) > 1
+
+    def test_rotation_helper_changes_order(self):
+        items = ["a", "b", "c", "d"]
+        assert _rotated(items, 0) != _rotated(items, 1)
+        assert _rotated(items, len(items)) == items
+        assert sorted(_rotated(items, 3)) == items
+
+    def test_cascade_without_vacancies_still_interstitial(self):
+        topology, state, config = ideal_state()
+        source = "lattice:7,7"
+        atom_id = state.occupied[source]
+        first = self.first_candidate(atom_id, source, "interstitial:7.5,7.5")
+        candidates = cascade_chain(200.0, topology, state, atom_id, first, 0)
+        assert len(candidates) >= 2
+        assert candidates[1].operation == "lattice_interstitial"
