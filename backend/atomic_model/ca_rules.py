@@ -248,36 +248,105 @@ def travel_vector(face: tuple[int, int], ndim: int) -> tuple[int, ...]:
     return tuple(vector)
 
 
+def _chebyshev(topology: Topology, a: str, b: str) -> int:
+    """Chebyshev distance between two sites in half-lattice units."""
+    ca = topology.sites[a].coordinate
+    cb = topology.sites[b].coordinate
+    return max(abs(round(2 * (x - y))) for x, y in zip(ca, cb))
+
+
+def choose_target_atom(
+    topology: Topology,
+    state: SimulationState,
+    act_number: int,
+    random_source,
+) -> int:
+    """CA target atom: energy first affects interstitial atoms.
+
+    Interstitial atoms are the weakest bound, so while at least one
+    exists the act energy is given to the interstitial atom nearest to
+    the irradiated face d(act_number); only a defect-free lattice falls
+    back to the equi-probable choice (as in the Monte Carlo method).
+    """
+    interstitials = [
+        atom_id for atom_id, key in state.atoms.items()
+        if topology.sites[key].kind == "interstitial"
+    ]
+    if not interstitials:
+        return random_source.choice(sorted(state.atoms))
+    axis, side = irradiation_direction(act_number, topology.dimensions)
+    offset = topology.metal_domain.offset[axis]
+    face = offset if side == 0 else offset + topology.dimensions[axis] - 1
+
+    def sort_key(atom_id: int):
+        coordinate = topology.sites[state.atoms[atom_id]].coordinate[axis]
+        return (abs(coordinate - face), state.atoms[atom_id], atom_id)
+
+    return min(interstitials, key=sort_key)
+
+
 def choose_primary_displacement(
     outcomes: list[ProbabilityOutcome],
     atom_id: int,
     topology: Topology | None = None,
     act_number: int = 0,
+    state: SimulationState | None = None,
 ) -> EventCandidate | None:
     """Primary CA event choice (R9 / R1) with the 2026-10-11 rules.
 
-    Selection order:
-      1. R9 recombination (interstitial_vacancy) — lowest-energy principle
-         [FGH98, sec. 2.2], unchanged.
-      2. R1 vacancy preference (AUTHOR HYPOTHESIS): the nearest selectable
-         free vacancy (shell r=1 before r=2, then sorted site key) — the
-         knocked-on atom is guaranteed to fly into it.
-      3. Frenkel pair (lattice_interstitial) along the irradiation
-         direction d(act_number): destinations whose coordinate grows along
-         the quantum travel vector; if the atom sits on the opposite
-         boundary and no such destination is selectable, any direction.
-      4. Any other operation — deterministic_choose fallback.
+    Interstitial source (energy affects interstitial atoms first):
+      1. Annihilation: the nearest selectable free vacancy (shell r=1
+         before r=2, then sorted key) — includes the former R9
+         recombination, lowest-energy principle [FGH98, sec. 2.2].
+      2. Pursuit (AUTHOR HYPOTHESIS): if the nearest free vacancy is
+         farther than one hop, the atom makes one interstitial step
+         strictly closer to it (per-act pursuit until annihilation).
+
+    Lattice source:
+      3. Vacancy preference (AUTHOR HYPOTHESIS): the nearest selectable
+         free vacancy — the knocked-on atom is guaranteed to fly into it.
+      4. Frenkel pair (lattice_interstitial) along the irradiation
+         direction d(act_number); if the cone is empty (atom on the
+         opposite boundary), any direction.
+      5. Any other operation — deterministic_choose fallback.
     """
     selectable = [item for item in outcomes if item.selectable]
     if not selectable:
         return None
 
-    recombination = [
-        item for item in selectable if item.operation == "interstitial_vacancy"
-    ]
-    if recombination:
-        best = min(recombination, key=lambda i: (i.shell, i.destination_site))
-        return _candidate_from_outcome(best, atom_id)
+    source_site = selectable[0].source_site
+    source_kind = (
+        topology.sites[source_site].kind if topology is not None else None
+    )
+
+    if source_kind == "interstitial":
+        reachable = [
+            item for item in selectable
+            if item.operation == "interstitial_vacancy"
+        ]
+        if reachable:
+            best = min(reachable, key=lambda i: (i.shell, i.destination_site))
+            return _candidate_from_outcome(best, atom_id)
+        if topology is not None and state is not None:
+            target = _nearest_free_vacancy(topology, state.occupied, source_site)
+            if target is not None:
+                steps = [
+                    item for item in selectable
+                    if item.operation == "interstitial_interstitial"
+                    and _chebyshev(topology, item.destination_site, target)
+                    < _chebyshev(topology, source_site, target)
+                ]
+                if steps:
+                    best = min(
+                        steps,
+                        key=lambda i: (
+                            _chebyshev(topology, i.destination_site, target),
+                            i.shell,
+                            i.destination_site,
+                        ),
+                    )
+                    return _candidate_from_outcome(best, atom_id)
+        return deterministic_choose(outcomes, atom_id)
 
     displacements = [
         item for item in selectable
@@ -297,7 +366,7 @@ def choose_primary_displacement(
     if topology is not None:
         axis, side = irradiation_direction(act_number, topology.dimensions)
         sign = 1 if side == 0 else -1
-        source_coordinate = topology.sites[displacements[0].source_site].coordinate
+        source_coordinate = topology.sites[source_site].coordinate
         cone = [
             item for item in displacements
             if (
@@ -309,6 +378,23 @@ def choose_primary_displacement(
             pool = cone
     best = min(pool, key=lambda i: (i.shell, i.destination_site))
     return _candidate_from_outcome(best, atom_id)
+
+
+def _nearest_free_vacancy(
+    topology: Topology, occupied: dict[str, int], site: str
+) -> str | None:
+    """Nearest free (empty, inside-metal) lattice site to `site`."""
+    best_key = None
+    best_distance = None
+    for key, site_obj in topology.sites.items():
+        if site_obj.kind != "lattice" or site_obj.metal_relation == "outside":
+            continue
+        if key in occupied:
+            continue
+        distance = _chebyshev(topology, key, site)
+        if best_distance is None or (distance, key) < (best_distance, best_key):
+            best_distance, best_key = distance, key
+    return best_key
 
 
 # ---------------------------------------------------------------------------
@@ -385,10 +471,18 @@ def cascade_chain(
 
     # Virtual state: track occupancy as we add candidates
     occupied = dict(state.occupied)
+    # the primary displacement itself must be reflected, otherwise a
+    # later generation could aim at the PKA site already taken in the
+    # real executor (destinations are blocked only by occupancy now)
+    del occupied[first_candidate.source_key]
+    occupied[first_candidate.destination_key] = first_candidate.atom_id
 
     # Queue: (site_key, energy) of displaced atoms that may continue
     queue = [(first_candidate.destination_key, e_res)]
-    visited = {first_candidate.source_key, first_candidate.destination_key}
+    # A lattice atom is never displaced twice; destinations (incl. the
+    # vacancies left behind) stay available for later generations
+    visited_targets = {first_candidate.source_key}
+    center = first_candidate.source_key
     generation = 0
 
     while queue and len(candidates) < n_d_max:
@@ -399,7 +493,8 @@ def cascade_chain(
 
         generation += 1
         step = _cascade_step(
-            topology, occupied, site, visited, int(act_number) + generation
+            topology, occupied, site, visited_targets,
+            int(act_number) + generation, center,
         )
         if step is None:
             continue
@@ -414,8 +509,7 @@ def cascade_chain(
         # Update virtual occupancy
         del occupied[target_site]
         occupied[dest] = target_atom
-        visited.add(target_site)
-        visited.add(dest)
+        visited_targets.add(target_site)
 
         # Energy halving: if energy >= 2*E_d, the displaced atom continues
         # with energy/2 (Kinchin/Pease: atom with E >= 2*E_d can produce
@@ -438,7 +532,6 @@ def _free_vacancy_near(
     topology: Topology,
     occupied: dict[str, int],
     site: str,
-    visited: set[str],
 ) -> bool:
     """True if a free (empty, inside-metal) lattice site sits in shell r=1/r=2."""
     for radius in (1, 2):
@@ -447,10 +540,36 @@ def _free_vacancy_near(
         except Exception:
             return False
         for key in sorted(shell_sites):
-            if key in visited or key in occupied:
+            if key in occupied:
                 continue
             site_obj = topology.sites[key]
             if site_obj.kind == "lattice" and site_obj.metal_relation != "outside":
+                return True
+    return False
+
+
+def _forward_vacancy_near(
+    topology: Topology,
+    occupied: dict[str, int],
+    site: str,
+    center: str,
+) -> bool:
+    """True if a free vacancy in shell r=1/r=2 of `site` is NOT strictly
+    closer to the cascade center than `site` itself — i.e. the cascade can
+    bend towards it without stepping backwards."""
+    reference = _chebyshev(topology, site, center)
+    for radius in (1, 2):
+        try:
+            shell_sites = topology.shell(site, radius)
+        except Exception:
+            return False
+        for key in sorted(shell_sites):
+            if key in occupied:
+                continue
+            site_obj = topology.sites[key]
+            if site_obj.kind != "lattice" or site_obj.metal_relation == "outside":
+                continue
+            if _chebyshev(topology, key, center) >= reference:
                 return True
     return False
 
@@ -459,28 +578,41 @@ def _find_destination(
     topology: Topology,
     occupied: dict[str, int],
     site: str,
-    visited: set[str],
     offset: int,
+    center: str | None = None,
 ) -> tuple[str | None, str | None, int]:
     """Destination for a knocked-on atom from `site`.
 
-    Vacancy bias (author hypothesis): a free vacancy in shell r=1 (then
-    r=2) wins over any interstitial site; only then free interstitials are
-    considered (the pre-2026-10-11 behaviour).  Ordering inside each group
-    is rotated by `offset`, so the direction changes at every collision.
+    Forward-wave rule (2026-10-11, revision 2): destinations whose
+    Chebyshev distance from the cascade center `center` does not decrease
+    are tried first (the cascade develops outwards, like the shock wave
+    in [Voskoboynikov 2020, p.13-14]); strictly backward destinations are
+    used only when no forward destination exists (lattice boundary).
+    Inside each pass the vacancy bias (author hypothesis) holds: a free
+    vacancy in shell r=1 (then r=2) wins over any interstitial site —
+    including vacancies left by earlier generations of the same cascade
+    sideways/ahead, which is exactly the visible "bend" of the vector.
     """
-    for kind in ("lattice", "interstitial"):
-        for radius in (1, 2):
-            try:
-                shell_sites = topology.shell(site, radius)
-            except Exception:
-                continue
-            for key in _rotated(sorted(shell_sites), offset):
-                if key in visited or key in occupied:
+    reference = _chebyshev(topology, site, center) if center else None
+    for forward_only in (True, False):
+        for kind in ("lattice", "interstitial"):
+            for radius in (1, 2):
+                try:
+                    shell_sites = topology.shell(site, radius)
+                except Exception:
                     continue
-                site_obj = topology.sites[key]
-                if site_obj.kind == kind and site_obj.metal_relation != "outside":
-                    return key, kind, radius
+                for key in _rotated(sorted(shell_sites), offset):
+                    if key in occupied:
+                        continue
+                    if (
+                        forward_only
+                        and reference is not None
+                        and _chebyshev(topology, key, center) < reference
+                    ):
+                        continue
+                    site_obj = topology.sites[key]
+                    if site_obj.kind == kind and site_obj.metal_relation != "outside":
+                        return key, kind, radius
     return None, None, 0
 
 
@@ -488,43 +620,55 @@ def _cascade_step(
     topology: Topology,
     occupied: dict[str, int],
     site: str,
-    visited: set[str],
+    visited_targets: set[str],
     offset: int,
+    center: str | None = None,
 ) -> tuple[int, str, str, str, int] | None:
     """One cascade collision: target lattice atom + destination for it.
 
-    Targets (lattice atoms in shell r=1, then r=2, of the carrier site) are
-    taken in rotated order — the propagation direction therefore changes
-    at every collision [Voskoboynikov 2020, p.13-14].  Targets with a free
-    vacancy in their own neighbourhood come first: the cascade vector is
-    bent towards vacancies (author hypothesis — weaker bonds near a
-    vacancy attract the knocked-on atom).
+    Targets are collected from shells r=1 and r=2 at once in rotated
+    order — the propagation direction changes at every collision
+    [Voskoboynikov 2020, p.13-14] — and split into three groups: forward
+    targets with a forward/sideways free vacancy nearby (the bend, author
+    hypothesis), plain forward targets, and strictly backward targets as
+    a last resort.  A lattice atom is never displaced twice
+    (`visited_targets`); destinations are blocked only by occupancy, so
+    a generation may fill a vacancy left by an earlier generation.
     """
+    reference = _chebyshev(topology, site, center) if center else None
+    ordered: list[str] = []
     for radius in (1, 2):
         try:
             shell_sites = topology.shell(site, radius)
         except Exception:
             continue
-        ordered = _rotated(sorted(shell_sites), offset)
-        targets: list[tuple[bool, str]] = []
-        for key in ordered:
-            if key in visited or key not in occupied:
-                continue
-            site_obj = topology.sites[key]
-            if site_obj.kind != "lattice" or site_obj.metal_relation == "outside":
-                continue
-            targets.append(
-                (not _free_vacancy_near(topology, occupied, key, visited), key)
-            )
-        # Stable sort: vacancy-attracted targets first, rotation order kept
-        targets.sort(key=lambda pair: pair[0])
-        for _, target_site in targets:
-            dest, dest_kind, dest_shell = _find_destination(
-                topology, occupied, target_site, visited, offset
-            )
-            if dest is None:
-                continue
-            return occupied[target_site], target_site, dest, dest_kind, dest_shell
+        ordered.extend(_rotated(sorted(shell_sites), offset))
+    targets: list[tuple[int, str]] = []
+    for key in ordered:
+        if key in visited_targets or key not in occupied:
+            continue
+        site_obj = topology.sites[key]
+        if site_obj.kind != "lattice" or site_obj.metal_relation == "outside":
+            continue
+        forward = (
+            reference is None
+            or _chebyshev(topology, key, center) >= reference
+        )
+        bend = center is not None and _forward_vacancy_near(
+            topology, occupied, key, center
+        )
+        group = 0 if (forward and bend) else 1 if forward else 2
+        targets.append((group, key))
+    # Stable sort: bend targets first, then forward, then backward;
+    # rotation order kept inside each group
+    targets.sort(key=lambda pair: pair[0])
+    for _, target_site in targets:
+        dest, dest_kind, dest_shell = _find_destination(
+            topology, occupied, target_site, offset, center
+        )
+        if dest is None:
+            continue
+        return occupied[target_site], target_site, dest, dest_kind, dest_shell
     return None
 
 

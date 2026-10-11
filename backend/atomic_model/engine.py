@@ -8,6 +8,7 @@ from backend.atomic_model.errors import InvalidEventError, StateInvariantError, 
 from backend.atomic_model.ca_rules import (
     deterministic_choose,
     choose_primary_displacement,
+    choose_target_atom,
     cascade_chain,
     photonuclear_channel,
     MIN_PHOTONUCLEAR_THRESHOLD_EV,
@@ -77,7 +78,16 @@ class SimulationEngine:
         try:
             if not source.atoms:
                 raise InvalidEventError("NO_ATOMS")
-            atom_id = random_source.choice(sorted(source.atoms))
+            if source.configuration.get("method") == "cellular_automata":
+                # CA: energy first affects interstitial atoms (the weakest
+                # bound) — the target is the interstitial nearest to the
+                # irradiated face d(act); a defect-free lattice falls back
+                # to the equi-probable choice
+                atom_id = choose_target_atom(
+                    topology, source, source.act_number, random_source
+                )
+            else:
+                atom_id = random_source.choice(sorted(source.atoms))
             q_n = source.configuration["q_max_ev"] * random_source.betavariate(1, 4)
             q_thr = source.configuration["q_thr_ev"]
             event_engine = EventEngine(source.configuration)
@@ -116,7 +126,8 @@ class SimulationEngine:
                         # (author hypothesis) > Frenkel pair along the
                         # irradiation direction d(act) = act mod 2n.
                         candidate = choose_primary_displacement(
-                            outcomes, atom_id, topology, source.act_number
+                            outcomes, atom_id, topology, source.act_number,
+                            state=source,
                         )
                         # R2-R3: cascade for a displacement at Q >= 2*E_d
                         # (Kinchin-Pease hard-sphere model, NRT g=0.8);

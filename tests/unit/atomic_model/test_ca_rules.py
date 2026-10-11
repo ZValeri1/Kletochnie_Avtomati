@@ -6,12 +6,14 @@ from backend.atomic_model.ca_rules import (
     NI_DISPLACEMENT_THRESHOLD_EV,
     cascade_chain,
     choose_primary_displacement,
+    choose_target_atom,
     deterministic_choose,
     irradiation_direction,
     travel_vector,
+    _chebyshev,
     _rotated,
 )
-from backend.atomic_model.events import EventCandidate, EventEngine, ProbabilityOutcome
+from backend.atomic_model.events import EventCandidate, EventEngine, ProbabilityOutcome, RandomSource
 from backend.atomic_model.state import SimulationState
 from backend.atomic_model.topology import Topology
 
@@ -478,3 +480,89 @@ class TestCascadeDirectionRules:
         candidates = cascade_chain(200.0, topology, state, atom_id, first, 0)
         assert len(candidates) >= 2
         assert candidates[1].operation == "lattice_interstitial"
+
+
+class TestTargetAtomRules:
+    """Energy first affects interstitial atoms (revision 2026-10-11 #2)."""
+
+    def test_interstitial_nearest_to_irradiated_face(self):
+        topology, state, config = ideal_state()
+        atom_a = state.occupied["lattice:6,6"]
+        state.relocate(atom_a, "interstitial:6.5,6.5")
+        atom_b = state.occupied["lattice:8,8"]
+        state.relocate(atom_b, "interstitial:8.5,8.5")
+        rng = RandomSource(1)
+        # act 0: face x = 0 -> the interstitial nearer to that face
+        assert choose_target_atom(topology, state, 0, rng) == atom_a
+        # act 1: face x = max -> the other one
+        assert choose_target_atom(topology, state, 1, rng) == atom_b
+
+    def test_defect_free_lattice_falls_back_to_uniform(self):
+        topology, state, config = ideal_state()
+        rng = RandomSource(3)
+        assert choose_target_atom(topology, state, 0, rng) in state.atoms
+
+
+class TestInterstitialPursuit:
+    """Interstitial atom pursues the nearest vacancy act by act."""
+
+    def test_annihilation_when_vacancy_reachable(self):
+        topology, state, config = ideal_state()
+        src = "lattice:5,5"
+        atom_id = state.occupied[src]
+        state.relocate(atom_id, "interstitial:7.5,7.5")  # own vac unreachable
+        make_vacancy(state, "lattice:8,8")   # r=1 from the interstitial
+        outcomes = EventEngine(config).probabilities(topology, state, atom_id, 30.0)
+        candidate = choose_primary_displacement(
+            outcomes, atom_id, topology, 0, state=state
+        )
+        assert candidate.operation == "interstitial_vacancy"
+        assert candidate.destination_key == "lattice:8,8"
+
+    def test_pursuit_step_strictly_closer(self):
+        topology, state, config = ideal_state(dimensions=(8, 8))
+        src = "lattice:9,9"
+        atom_id = state.occupied[src]
+        state.relocate(atom_id, "interstitial:12.5,12.5")  # own vac far behind
+        make_vacancy(state, "lattice:15,15")               # nearest, unreachable
+        outcomes = EventEngine(config).probabilities(topology, state, atom_id, 30.0)
+        candidate = choose_primary_displacement(
+            outcomes, atom_id, topology, 0, state=state
+        )
+        assert candidate.operation == "interstitial_interstitial"
+        # the diagonal r=2 step is the strictly closest one
+        assert candidate.destination_key == "interstitial:14.5,14.5"
+        target = "lattice:15,15"
+        assert _chebyshev(topology, candidate.destination_key, target) < \
+            _chebyshev(topology, "interstitial:12.5,12.5", target)
+
+
+class TestCascadeForwardWave:
+    """The cascade develops outwards: no strictly backward steps."""
+
+    def first_candidate(self, atom_id, source, dest):
+        return EventCandidate(
+            operation="lattice_interstitial",
+            atom_id=atom_id,
+            source_key=source,
+            destination_key=dest,
+            shell=1,
+            operation_weight=0.20,
+            shell_weight=0.75,
+            position_weight=0.20,
+            total_weight=0.20 * 0.75 * 0.20,
+            probability=1.0,
+        )
+
+    def test_cascade_never_steps_backward(self):
+        # 10x10 keeps the short cascade away from the metal boundary,
+        # where the forward pass has no destinations by construction
+        topology, state, config = ideal_state(dimensions=(10, 10))
+        source = "lattice:14,14"
+        atom_id = state.occupied[source]
+        first = self.first_candidate(atom_id, source, "interstitial:14.5,14.5")
+        candidates = cascade_chain(200.0, topology, state, atom_id, first, 0)
+        assert len(candidates) >= 3
+        for candidate in candidates[1:]:
+            assert _chebyshev(topology, candidate.destination_key, source) >= \
+                _chebyshev(topology, candidate.source_key, source)
