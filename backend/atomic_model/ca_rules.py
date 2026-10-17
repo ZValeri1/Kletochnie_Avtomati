@@ -427,6 +427,16 @@ def _nearest_free_vacancy(
 #        propagation vector changes at every collision and no single
 #        direction is preferred over many acts.
 #
+# Reverse rule (2026-10-16): the cascade may also turn back (by up to 180
+# degrees).  Molecular dynamics shows that the propagation direction changes
+# at every collision [Voskoboynikov 2020, p.13-14]; nothing in the
+# hard-sphere picture [Kinchin & Pease 1955, §2.2.2] forbids a recoil
+# directed back towards the cascade centre.  With CASCADE_ALLOW_REVERSE =
+# True all neighbours of the energy carrier (shells r=1, r=2) compete on an
+# equal footing in the rotated order; the forward-wave filter of revision 2
+# is kept only as an option (CASCADE_ALLOW_REVERSE = False).
+CASCADE_ALLOW_REVERSE = True
+
 # At Q_max = 82 eV (current profile): N_d = max(1, floor(0.8*82/46)) = 1,
 # i.e. the cascade is indistinguishable from R1 (single Frenkel pair).
 # For real cascades (N_d >= 8) Q_max >= 500 eV is required.
@@ -594,7 +604,8 @@ def _find_destination(
     sideways/ahead, which is exactly the visible "bend" of the vector.
     """
     reference = _chebyshev(topology, site, center) if center else None
-    for forward_only in (True, False):
+    passes = (False,) if CASCADE_ALLOW_REVERSE else (True, False)
+    for forward_only in passes:
         for kind in ("lattice", "interstitial"):
             for radius in (1, 2):
                 try:
@@ -650,13 +661,19 @@ def _cascade_step(
         site_obj = topology.sites[key]
         if site_obj.kind != "lattice" or site_obj.metal_relation == "outside":
             continue
-        forward = (
-            reference is None
-            or _chebyshev(topology, key, center) >= reference
-        )
-        bend = center is not None and _forward_vacancy_near(
-            topology, occupied, key, center
-        )
+        if CASCADE_ALLOW_REVERSE:
+            # reverse allowed: every direction is admissible, the bend
+            # looks for a free vacancy on any side of the target
+            forward = True
+            bend = _free_vacancy_near(topology, occupied, key)
+        else:
+            forward = (
+                reference is None
+                or _chebyshev(topology, key, center) >= reference
+            )
+            bend = center is not None and _forward_vacancy_near(
+                topology, occupied, key, center
+            )
         group = 0 if (forward and bend) else 1 if forward else 2
         targets.append((group, key))
     # Stable sort: bend targets first, then forward, then backward;
@@ -707,3 +724,239 @@ def _make_cascade_candidate(
         total_weight=operation_weight * shell_weight * position_weight,
         probability=1.0,         # deterministic
     )
+
+
+# ===========================================================================
+# Revision 3 (16.10.2026): rules aligned with the literature
+# ===========================================================================
+# Sources (folder "Изучение клеточных автоматов"):
+#   [KP]  Kinchin G.H., Pease R.S. Rep. Prog. Phys. 18 (1955) 1-51.
+#   [NRT] Norgett M.J., Robinson M.T., Torrens I.M. Nucl. Eng. Des. 33 (1975) 50-54.
+#   [V]   Voskoboynikov R.E. FMM 121(1) (2020) 10-17.
+#
+# 1. Target of an act: equiprobable among the atoms of the metal (lattice
+#    atoms and interstitials, NOT adatoms).  [KP, p.14]: under gamma
+#    irradiation (Compton electrons) the damage is a RANDOM distribution of
+#    Frenkel defects.  Adatoms are never targets: they stay outside
+#    (radiation swelling).
+# 2. Flight of a displaced atom: it loses about half of its energy at every
+#    collision and is trapped when its energy falls to ~1 eV [KP, p.14], so it
+#    travels n = ceil(log2(Q / 1 eV)) interatomic distances, but "rarely more
+#    than four or five" [KP, p.14] -> n <= 5.  The flight follows the
+#    direction of energy input u(d(k)); an occupied position stops the atom
+#    earlier; crossing the metal surface makes it an adatom.
+# 3. Capture zone (athermal recombination): an interstitial and a vacancy
+#    closer than a critical distance recombine instantly, farther ones are
+#    stable [KP, §3.4, Pease model; NRT, §2.4 vacancy capture radius].  The
+#    zone of an interstitial = the lattice sites of its coordination shells
+#    r = 1 and r = 2, i.e. Omega = 16 sites in 2D (64 in 3D).  Pease's
+#    saturation y_sat = ln2 / Omega then gives 4.3 % (2D) and 1.1 % (3D) of
+#    interstitials, in line with [KP, p.3: "not more than about 1 %"] and
+#    [KP, p.21: "unlikely to be much greater than 5 %"].
+# 4. Stable lattice atoms are never moved without creating a defect: the
+#    former "fly into the nearest vacancy" rule (R1a) and the pursuit of a
+#    vacancy are removed.  An interstitial hit by an act with Q >= E_d makes
+#    a flight of its own (radiation-induced migration, [KP, §3.5]); the
+#    capture zone then decides whether it recombines.
+# 5. Cascade (Q >= 2 E_d): up to N_d = max(1, floor(0.8 Q / 2 E_d)) stable
+#    displacements [NRT, eq.4; V, p.13]; energy halves at every generation
+#    [KP, §2.2.2]; the propagation direction may turn by up to 180 degrees.
+# Temperature (thermal migration) is NOT modelled.
+import math as _math
+
+from backend.atomic_model.topology import Site as _Site
+
+TRAP_ENERGY_EV = 1.0          # [KP, p.14] displaced atom trapped at ~1 eV
+# Surface binding: to leave the metal the atom must still carry at least the
+# cohesive energy of nickel, |E_0| = 4.45 eV [V, p.11] (the usual estimate of
+# the surface binding energy); otherwise it stops at the last position inside.
+SURFACE_BINDING_EV = 4.45
+MAX_FLIGHT = 5                # [KP, p.14] "four or five interatomic distances"
+CAPTURE_HALF_OFFSETS = (-3, -1, 1, 3)   # shells r=1,2 of an interstitial
+
+
+def flight_length(energy_ev: float) -> int:
+    """Number of interatomic distances travelled by a displaced atom."""
+    if energy_ev <= TRAP_ENERGY_EV:
+        return 1
+    return max(1, min(MAX_FLIGHT, _math.ceil(_math.log2(energy_ev / TRAP_ENERGY_EV))))
+
+
+def _key(kind: str, half_units) -> str:
+    return _Site(kind, tuple(half_units), "outside").key
+
+
+def metal_atoms(topology: Topology, state: SimulationState) -> list[int]:
+    """Atoms that can be a target: lattice atoms and interstitials inside the metal."""
+    return sorted(
+        atom_id for atom_id, key in state.atoms.items()
+        if topology.sites[key].metal_relation != "outside"
+    )
+
+
+def choose_target_atom_uniform(topology, state, random_source) -> int | None:
+    candidates = metal_atoms(topology, state)
+    if not candidates:
+        return None
+    return random_source.choice(candidates)
+
+
+def capture_zone_vacancies(topology: Topology, occupied, site_key: str) -> list[str]:
+    """Free metal lattice sites in the capture zone of an interstitial site,
+    nearest first (Chebyshev distance, then key)."""
+    site = topology.sites[site_key]
+    if site.kind != "interstitial":
+        return []
+    found = []
+    lattice = topology.metal_domain.lattice_keys
+    from itertools import product as _product
+    for delta in _product(CAPTURE_HALF_OFFSETS, repeat=len(site.half_units)):
+        half = tuple(h + d for h, d in zip(site.half_units, delta))
+        key = _key("lattice", half)
+        if key in lattice and key not in occupied:
+            found.append((max(abs(d) for d in delta), key))
+    return [key for _, key in sorted(found)]
+
+
+def relax_unstable_pairs(topology: Topology, atoms: dict, occupied: dict) -> list[tuple[int, str, str]]:
+    """Athermal recombination of every interstitial that has a free vacancy
+    in its capture zone.  Mutates atoms/occupied, returns the moves."""
+    moves = []
+    changed = True
+    while changed:
+        changed = False
+        for atom_id in sorted(atoms):
+            key = atoms[atom_id]
+            site = topology.sites[key]
+            if site.kind != "interstitial" or site.metal_relation == "outside":
+                continue
+            zone = capture_zone_vacancies(topology, occupied, key)
+            if zone:
+                dest = zone[0]
+                del occupied[key]
+                occupied[dest] = atom_id
+                atoms[atom_id] = dest
+                moves.append((atom_id, key, dest))
+                changed = True
+    return moves
+
+
+def _connected_ok(topology: Topology, occupied: dict) -> bool:
+    try:
+        topology.validate_occupancy(occupied)
+        return True
+    except Exception:
+        return False
+
+
+def _directions(ndim: int, act_number: int, generation: int):
+    """Irradiation face d(k) first, then the other directions in a rotated
+    order (the vector may turn by up to 180 degrees)."""
+    faces = [(axis, side) for axis in range(ndim) for side in (0, 1)]
+    start = (act_number + generation) % len(faces)
+    return faces[start:] + faces[:start]
+
+
+def flight_destination(
+    topology: Topology,
+    occupied: dict,
+    atom_id: int,
+    start_key: str,
+    energy_ev: float,
+    act_number: int,
+    generation: int = 0,
+) -> str | None:
+    """Where a displaced atom (or a hit interstitial) comes to rest."""
+    start = topology.sites[start_key]
+    ndim = len(start.half_units)
+    length = flight_length(energy_ev)
+    trial = dict(occupied)
+    del trial[start_key]
+    for axis, side in _directions(ndim, act_number, generation):
+        sign = 1 if side == 0 else -1
+        # perpendicular half offset (lattice -> interstitial sublattice)
+        perps = [()]
+        if start.kind == "lattice":
+            from itertools import product as _product
+            perps = list(_product((1, -1), repeat=ndim - 1))
+            shift = (act_number + generation) % len(perps)
+            perps = perps[shift:] + perps[:shift]
+        for perp in perps:
+            path = []
+            for step in range(1, length + 1):
+                half = list(start.half_units)
+                if start.kind == "lattice":
+                    half[axis] += sign * (2 * step - 1)
+                    others = [i for i in range(ndim) if i != axis]
+                    for i, s in zip(others, perp):
+                        half[i] += s
+                else:
+                    half[axis] += sign * 2 * step
+                key = _key("interstitial", half)
+                if key not in topology.sites:
+                    break
+                path.append(key)
+            dest = None
+            for step, key in enumerate(path, start=1):
+                if key in trial:
+                    break               # stopped by an occupied position
+                if topology.sites[key].metal_relation == "outside":
+                    # energy left after (step - 1) halvings [KP, §2.2.2]
+                    if energy_ev / 2 ** (step - 1) >= SURFACE_BINDING_EV:
+                        dest = key      # left the metal: adatom
+                    break
+                dest = key
+            if dest is None:
+                continue
+            check = dict(trial)
+            check[dest] = atom_id
+            if _connected_ok(topology, check):
+                return dest
+    return None
+
+
+def ca_act_moves(
+    topology: Topology,
+    state: SimulationState,
+    atom_id: int,
+    q_n: float,
+    e_d: float,
+    act_number: int,
+) -> tuple[list[tuple[int, str, str]], list[tuple[int, str, str]]]:
+    """Displacements and recombinations of one act (revision 3).
+
+    Returns (flights, recombinations); each item is (atom_id, src, dst).
+    """
+    atoms = dict(state.atoms)
+    occupied = dict(state.occupied)
+    flights: list[tuple[int, str, str]] = []
+    source = atoms[atom_id]
+    n_d = max(1, int(0.8 * q_n / (2 * e_d))) if q_n >= 2 * e_d else 1
+    queue = [(atom_id, source, q_n if q_n < 2 * e_d else q_n / 2, 0)]
+    visited = set()
+    while queue and len(flights) < n_d:
+        moving, src, energy, generation = queue.pop(0)
+        dest = flight_destination(topology, occupied, moving, src, energy, act_number, generation)
+        if dest is None:
+            continue
+        del occupied[src]
+        occupied[dest] = moving
+        atoms[moving] = dest
+        flights.append((moving, src, dest))
+        visited.add(src)
+        # cascade: the moving atom hands half of its energy to a lattice
+        # neighbour of its former site (any direction, rotated order)
+        if energy >= 2 * e_d and len(flights) < n_d:
+            src_site = topology.sites[src]
+            neighbours = sorted(
+                key for key in topology.contact_neighbors(src)
+                if topology.sites[key].kind == "lattice"
+                and key in topology.metal_domain.lattice_keys
+                and key in occupied and key not in visited
+            ) if src_site.kind == "lattice" else []
+            if neighbours:
+                shift = (act_number + generation + 1) % len(neighbours)
+                neighbour = (neighbours[shift:] + neighbours[:shift])[0]
+                queue.append((occupied[neighbour], neighbour, energy / 2, generation + 1))
+    recombinations = relax_unstable_pairs(topology, atoms, occupied)
+    return flights, recombinations

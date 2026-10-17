@@ -6,6 +6,9 @@ from functools import lru_cache
 
 from backend.atomic_model.errors import InvalidEventError, StateInvariantError, TopologyError
 from backend.atomic_model.ca_rules import (
+    ca_act_moves,
+    choose_target_atom_uniform,
+    relax_unstable_pairs,
     deterministic_choose,
     choose_primary_displacement,
     choose_target_atom,
@@ -15,6 +18,7 @@ from backend.atomic_model.ca_rules import (
 )
 from backend.atomic_model.event_executor import EventExecutor
 from backend.atomic_model.events import (
+    EventCandidate,
     EventEngine,
     EventRecord,
     ProbabilityOutcome,
@@ -78,6 +82,14 @@ class SimulationEngine:
         try:
             if not source.atoms:
                 raise InvalidEventError("NO_ATOMS")
+            if (
+                source.configuration.get("method") == "cellular_automata"
+                and source.configuration.get("profile") != "ni_photonuclear"
+            ):
+                # Revision 3 (16.10.2026): lattice-damage rules R0-R3/R9
+                # aligned with Kinchin-Pease 1955 and NRT 1975, see ca_rules.
+                return self._ca_step(topology, source, random_source, metrics_before)
+            # Photonuclear profile (R4-R7) keeps the revision-2 rules below.
             if source.configuration.get("method") == "cellular_automata":
                 # CA: energy first affects interstitial atoms (the weakest
                 # bound) — the target is the interstitial nearest to the
@@ -215,6 +227,85 @@ class SimulationEngine:
         except Exception:
             random_source.set_state(rng_before)
             raise
+
+    def _ca_step(self, topology, source, random_source, metrics_before) -> StepResult:
+        """Cellular automata act, revision 3 (16.10.2026), see ca_rules."""
+        atom_id = choose_target_atom_uniform(topology, source, random_source)
+        if atom_id is None:
+            raise InvalidEventError("NO_ATOMS")
+        q_n = source.configuration["q_max_ev"] * random_source.betavariate(1, 4)
+        q_thr = source.configuration["q_thr_ev"]
+        if q_n < q_thr:
+            flights = []
+            atoms = dict(source.atoms)
+            occupied = dict(source.occupied)
+            recombinations = relax_unstable_pairs(topology, atoms, occupied)
+            reason = "BELOW_THRESHOLD"
+        else:
+            flights, recombinations = ca_act_moves(
+                topology, source, atom_id, q_n, q_thr, source.act_number
+            )
+            reason = "CASCADE_APPLIED" if len(flights) > 1 else (
+                "APPLIED" if flights else "NO_POSITIVE_CANDIDATE"
+            )
+        if recombinations:
+            reason += "+RECOMBINED"
+        candidates = []
+        for kind, moves in (("flight", flights), ("capture", recombinations)):
+            for moving, src, dst in moves:
+                operation = EventEngine._operation(src, dst, 1, topology) or (
+                    "interstitial_vacancy" if kind == "capture" else "lattice_interstitial"
+                )
+                candidates.append(EventCandidate(
+                    operation=operation, atom_id=moving, source_key=src,
+                    destination_key=dst, shell=1, operation_weight=1.0,
+                    shell_weight=1.0, position_weight=1.0, total_weight=1.0,
+                    probability=1.0,
+                ))
+        if candidates:
+            execution = self.executor.execute_cascade(topology, source, candidates)
+            state = execution.state
+        else:
+            execution = None
+            state = source.transition_copy()
+            state.act_number += 1
+            state.revision += 1
+        if len(state.atoms) != len(source.atoms):
+            raise InvalidEventError("INVARIANT_VIOLATION")
+        state.validate(topology)
+        metrics = self.metrics_calculator.calculate(topology, state)
+        state.metrics_points.append(
+            self.metrics_calculator.point(topology, state, "physical_act").model_dump()
+        )
+        main = candidates[0] if candidates else None
+        source_site = source.atoms[atom_id]
+        event = EventRecord.create(
+            revision=state.revision,
+            act_number=state.act_number,
+            source_atom_id=atom_id,
+            source_site=source_site,
+            source_coordinate=topology.sites[source_site].coordinate,
+            destination_site=main.destination_key if main else None,
+            destination_coordinate=(
+                topology.sites[main.destination_key].coordinate if main else None
+            ),
+            operation=main.operation if main else "no_change",
+            shell=main.shell if main else None,
+            q_n=q_n,
+            q_thr=q_thr,
+            result_reason=reason,
+            operation_weight=1.0 if main else 0.0,
+            shell_weight=1.0 if main else 0.0,
+            position_weight=1.0 if main else 0.0,
+            total_weight=1.0 if main else 0.0,
+            probability=1.0,
+            affected_atom_ids=execution.affected_atom_ids if execution else (),
+            affected_site_ids=execution.affected_site_ids if execution else (),
+            metrics_before=metrics_before.model_dump(),
+            metrics_after=metrics.model_dump(),
+        )
+        state.events.append(event.to_dict())
+        return StepResult(topology, state, event, metrics)
 
     def move(self, source: SimulationState, atom_id: int, destination_key: str) -> StepResult:
         return self._manual_edit(source, "move", atom_id=atom_id, destination_key=destination_key)

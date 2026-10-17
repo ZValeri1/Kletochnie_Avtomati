@@ -13,6 +13,7 @@ from backend.atomic_model.ca_rules import (
     _chebyshev,
     _rotated,
 )
+import backend.atomic_model.ca_rules as ca_rules_module
 from backend.atomic_model.events import EventCandidate, EventEngine, ProbabilityOutcome, RandomSource
 from backend.atomic_model.state import SimulationState
 from backend.atomic_model.topology import Topology
@@ -443,9 +444,11 @@ class TestCascadeDirectionRules:
         candidates = cascade_chain(200.0, topology, state, atom_id, first, 0)
         assert len(candidates) >= 2
         second = candidates[1]
-        # The knocked-on atom fills the free vacancy: no new interstitial
+        # The knocked-on atom fills a free vacancy: no new interstitial.
+        # With the reverse rule (2026-10-16) this may be the prepared
+        # vacancy ahead or the vacancy left behind by the PKA.
         assert second.operation == "lattice_vacancy"
-        assert second.destination_key == vac
+        assert second.destination_key in (vac, source)
         assert second.probability == 1.0
 
     def test_direction_changes_every_collision(self):
@@ -473,6 +476,19 @@ class TestCascadeDirectionRules:
         assert sorted(_rotated(items, 3)) == items
 
     def test_cascade_without_vacancies_still_interstitial(self):
+        topology, state, config = ideal_state()
+        source = "lattice:7,7"
+        atom_id = state.occupied[source]
+        first = self.first_candidate(atom_id, source, "interstitial:7.5,7.5")
+        candidates = cascade_chain(200.0, topology, state, atom_id, first, 0)
+        assert len(candidates) >= 2
+        # reverse rule: the only free vacancy is the one left by the PKA,
+        # the cascade turns back and the next atom fills it
+        assert candidates[1].operation == "lattice_vacancy"
+        assert candidates[1].destination_key == source
+
+    def test_cascade_without_vacancies_forward_only_option(self, monkeypatch):
+        monkeypatch.setattr(ca_rules_module, "CASCADE_ALLOW_REVERSE", False)
         topology, state, config = ideal_state()
         source = "lattice:7,7"
         atom_id = state.occupied[source]
@@ -554,7 +570,23 @@ class TestCascadeForwardWave:
             probability=1.0,
         )
 
-    def test_cascade_never_steps_backward(self):
+    def test_cascade_can_turn_back(self):
+        """Reverse rule (2026-10-16): a step towards the cascade centre
+        (a turn by up to 180 degrees) is admissible."""
+        topology, state, config = ideal_state(dimensions=(10, 10))
+        source = "lattice:14,14"
+        atom_id = state.occupied[source]
+        first = self.first_candidate(atom_id, source, "interstitial:14.5,14.5")
+        candidates = cascade_chain(500.0, topology, state, atom_id, first, 0)
+        assert len(candidates) >= 3
+        assert any(
+            _chebyshev(topology, c.destination_key, source)
+            < _chebyshev(topology, c.source_key, source)
+            for c in candidates[1:]
+        )
+
+    def test_cascade_never_steps_backward(self, monkeypatch):
+        monkeypatch.setattr(ca_rules_module, "CASCADE_ALLOW_REVERSE", False)
         # 10x10 keeps the short cascade away from the metal boundary,
         # where the forward pass has no destinations by construction
         topology, state, config = ideal_state(dimensions=(10, 10))
