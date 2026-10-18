@@ -76,7 +76,10 @@ def test_frenkel_pair_flies_four_and_a_half_distances_and_survives():
     assert topology.sites[dst].kind == "interstitial"
 
 
-def test_no_move_of_stable_atoms_below_threshold_and_damage_accumulates():
+def test_no_move_of_stable_atoms_below_threshold_and_damage_accumulates(monkeypatch):
+    # literature-aligned revision 3 switches (revision 4 turns them off)
+    monkeypatch.setattr(C, "INSTANT_RECOMBINATION", True)
+    monkeypatch.setattr(C, "MOBILE_ADATOMS", False)
     engine = SimulationEngine()
     result = engine.create_initial_state(dict(CONFIG), RandomSource(1))
     state, rng = result.state, RandomSource(2)

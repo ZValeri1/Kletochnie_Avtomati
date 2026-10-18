@@ -774,6 +774,39 @@ SURFACE_BINDING_EV = 4.45
 MAX_FLIGHT = 5                # [KP, p.14] "four or five interatomic distances"
 CAPTURE_HALF_OFFSETS = (-3, -1, 1, 3)   # shells r=1,2 of an interstitial
 
+# ---------------------------------------------------------------------------
+# Revision 4 (17.10.2026): the CA is tuned to the Monte Carlo behaviour
+# (decision of 17.10.2026; the literature-aligned revision 3 stays available
+# through the two switches below, see "KA_physics_roadmap.docx").
+#   INSTANT_RECOMBINATION = False: no athermal relaxation of all close pairs
+#       after every act; a pair recombines only when the interstitial itself
+#       is hit (Q >= E_d) and a vacancy lies in its capture zone (as the
+#       interstitial -> vacancy operation of the Monte Carlo method).
+#   MOBILE_ADATOMS = True: an atom outside the metal is a target like any
+#       other atom; when hit (Q >= E_d) it moves over the outside positions
+#       (it never returns into the metal) and may drift away from the surface,
+#       staying in contact with the crystal (connectivity invariant).
+INSTANT_RECOMBINATION = False
+MOBILE_ADATOMS = True
+# Revision 4a (17.10.2026): an atom outside the metal may not move farther
+# from the metal than 5 % of the lattice length (at least 1 interatomic
+# distance): 20x20 -> 1, 100x100 -> 5.
+OUTSIDE_DEPTH_FRACTION = 0.05
+
+
+def outside_depth_limit(topology: Topology) -> float:
+    return max(1, round(OUTSIDE_DEPTH_FRACTION * max(topology.metal_domain.dimensions)))
+
+
+def outside_depth(topology: Topology, key: str) -> float:
+    """Distance of a position from the metal block (interatomic distances)."""
+    domain = topology.metal_domain
+    depth = 0.0
+    for half, offset, size in zip(topology.sites[key].half_units, domain.offset, domain.dimensions):
+        x = half / 2 - offset
+        depth = max(depth, -x, x - (size - 1))
+    return depth
+
 
 def flight_length(energy_ev: float) -> int:
     """Number of interatomic distances travelled by a displaced atom."""
@@ -794,8 +827,15 @@ def metal_atoms(topology: Topology, state: SimulationState) -> list[int]:
     )
 
 
+def target_atoms(topology: Topology, state: SimulationState) -> list[int]:
+    """Atoms that can be the target of an act (revision 4: adatoms too)."""
+    if MOBILE_ADATOMS:
+        return sorted(state.atoms)
+    return metal_atoms(topology, state)
+
+
 def choose_target_atom_uniform(topology, state, random_source) -> int | None:
-    candidates = metal_atoms(topology, state)
+    candidates = target_atoms(topology, state)
     if not candidates:
         return None
     return random_source.choice(candidates)
@@ -931,6 +971,18 @@ def ca_act_moves(
     occupied = dict(state.occupied)
     flights: list[tuple[int, str, str]] = []
     source = atoms[atom_id]
+    source_site = topology.sites[source]
+    if source_site.metal_relation == "outside":
+        # revision 4: an adatom moves over the outside positions only
+        dest = adatom_destination(topology, occupied, atom_id, source, q_n, act_number)
+        if dest is None:
+            return [], []
+        return [(atom_id, source, dest)], []
+    if not INSTANT_RECOMBINATION and source_site.kind == "interstitial":
+        # revision 4: recombination only when the interstitial is hit
+        zone = capture_zone_vacancies(topology, occupied, source)
+        if zone:
+            return [], [(atom_id, source, zone[0])]
     n_d = max(1, int(0.8 * q_n / (2 * e_d))) if q_n >= 2 * e_d else 1
     queue = [(atom_id, source, q_n if q_n < 2 * e_d else q_n / 2, 0)]
     visited = set()
@@ -958,5 +1010,59 @@ def ca_act_moves(
                 shift = (act_number + generation + 1) % len(neighbours)
                 neighbour = (neighbours[shift:] + neighbours[:shift])[0]
                 queue.append((occupied[neighbour], neighbour, energy / 2, generation + 1))
-    recombinations = relax_unstable_pairs(topology, atoms, occupied)
+    recombinations = (
+        relax_unstable_pairs(topology, atoms, occupied) if INSTANT_RECOMBINATION else []
+    )
     return flights, recombinations
+
+
+def adatom_destination(
+    topology: Topology,
+    occupied: dict,
+    atom_id: int,
+    start_key: str,
+    energy_ev: float,
+    act_number: int,
+) -> str | None:
+    """Revision 4: where a hit adatom comes to rest.
+
+    The adatom makes up to flight_length(Q) steps over free OUTSIDE positions
+    (lattice nodes and interstitial positions outside the metal), each step to
+    a contact neighbour that advances along u(d(k)) (directions in the rotated
+    order, as for any flight).  It never enters the metal.  It keeps the
+    farthest position of the walk that leaves every atom in contact with the
+    crystal (the connectivity invariant of the model), otherwise a shorter
+    one, otherwise the next direction; it may thus drift away from the surface
+    along chains of other adatoms, as in the Monte Carlo method.
+    """
+    start = topology.sites[start_key]
+    ndim = len(start.half_units)
+    length = flight_length(energy_ev)
+    limit = outside_depth_limit(topology)
+    trial = dict(occupied)
+    del trial[start_key]
+    for axis, side in _directions(ndim, act_number, 0):
+        sign = 1 if side == 0 else -1
+        path = []
+        current = start_key
+        seen = {start_key}
+        for _ in range(length):
+            here = topology.sites[current].half_units[axis]
+            options = sorted(
+                key for key in topology.contact_neighbors(current)
+                if key not in trial and key not in seen
+                and topology.sites[key].metal_relation == "outside"
+                and sign * (topology.sites[key].half_units[axis] - here) > 0
+                and outside_depth(topology, key) <= limit
+            )
+            if not options:
+                break
+            current = options[act_number % len(options)]
+            seen.add(current)
+            path.append(current)
+        for dest in reversed(path):
+            check = dict(trial)
+            check[dest] = atom_id
+            if _connected_ok(topology, check):
+                return dest
+    return None

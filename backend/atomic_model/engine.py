@@ -16,6 +16,7 @@ from backend.atomic_model.ca_rules import (
     photonuclear_channel,
     MIN_PHOTONUCLEAR_THRESHOLD_EV,
 )
+from backend.atomic_model import ca_rules
 from backend.atomic_model.event_executor import EventExecutor
 from backend.atomic_model.events import (
     EventCandidate,
@@ -229,7 +230,7 @@ class SimulationEngine:
             raise
 
     def _ca_step(self, topology, source, random_source, metrics_before) -> StepResult:
-        """Cellular automata act, revision 3 (16.10.2026), see ca_rules."""
+        """Cellular automata act, revisions 3-4 (16-17.10.2026), see ca_rules."""
         atom_id = choose_target_atom_uniform(topology, source, random_source)
         if atom_id is None:
             raise InvalidEventError("NO_ATOMS")
@@ -239,16 +240,21 @@ class SimulationEngine:
             flights = []
             atoms = dict(source.atoms)
             occupied = dict(source.occupied)
-            recombinations = relax_unstable_pairs(topology, atoms, occupied)
+            recombinations = (
+                relax_unstable_pairs(topology, atoms, occupied)
+                if ca_rules.INSTANT_RECOMBINATION else []
+            )
             reason = "BELOW_THRESHOLD"
         else:
             flights, recombinations = ca_act_moves(
                 topology, source, atom_id, q_n, q_thr, source.act_number
             )
             reason = "CASCADE_APPLIED" if len(flights) > 1 else (
-                "APPLIED" if flights else "NO_POSITIVE_CANDIDATE"
+                "APPLIED" if flights else (
+                    "RECOMBINED" if recombinations else "NO_POSITIVE_CANDIDATE"
+                )
             )
-        if recombinations:
+        if recombinations and reason != "RECOMBINED":
             reason += "+RECOMBINED"
         candidates = []
         for kind, moves in (("flight", flights), ("capture", recombinations)):
