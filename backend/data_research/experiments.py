@@ -176,8 +176,7 @@ class ExperimentService:
             for _ in range(steps):
                 if record.cancel_requested:
                     return
-                response = await self.manager.step(simulation_id, revision)
-                revision = response.revision
+                revision = await self.manager.step_for_research(simulation_id, revision)
                 record.completed_steps += 1
             metrics = await self.manager.metrics_series(simulation_id)
             snapshot = await self.manager.get_snapshot(simulation_id)

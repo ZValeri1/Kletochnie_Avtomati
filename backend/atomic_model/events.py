@@ -7,6 +7,7 @@ from typing import Any, Literal
 from backend.atomic_model.errors import StateInvariantError, TopologyError
 from backend.atomic_model.state import SimulationState
 from backend.atomic_model.topology import Topology
+from backend.atomic_model.acceleration import get_compute_backend
 
 
 class RandomSource:
@@ -154,11 +155,12 @@ class EventEngine:
         "from_interstitial_outside": "external",
     }
 
-    def __init__(self, configuration: dict | None = None) -> None:
+    def __init__(self, configuration: dict | None = None, *, compute_backend=None) -> None:
         configuration = configuration or {}
         self.q_thr = float(configuration.get("q_thr_ev", 20.0))
         self.weights = dict(configuration.get("weights") or {})
         self.source_probabilities = self.effective_source_probabilities(self.weights)
+        self.compute_backend = compute_backend or get_compute_backend()
 
     def probabilities(
         self,
@@ -198,6 +200,7 @@ class EventEngine:
                     operation,
                     q_test,
                     total_weight,
+                    check_connectivity=False,
                 )
                 raw.append(
                     {
@@ -220,6 +223,20 @@ class EventEngine:
                         "q_thr": self.q_thr,
                     }
                 )
+        pending = [item for item in raw if item["selectable"]]
+        validity = self.compute_backend.validate_candidates(
+            topology, state, atom_id, [item["destination_site"] for item in pending]
+        )
+        for index, item in enumerate(pending):
+            if validity is None:
+                block_code = self._block_code(
+                    topology, state, atom_id, item["destination_site"],
+                    item["shell"], item["operation"], q_test, item["total_weight"],
+                )
+            else:
+                block_code = None if validity[index] else "DISCONNECTED_RESULT"
+            item["block_code"] = block_code
+            item["selectable"] = block_code is None
         group_sizes: dict[tuple[str, int, str], int] = {}
         for item in raw:
             if not item["selectable"]:
@@ -311,6 +328,8 @@ class EventEngine:
         operation: str | None,
         q_test: float,
         total_weight: float,
+        *,
+        check_connectivity: bool = True,
     ) -> str | None:
         if operation is None:
             return "UNSUPPORTED_TRANSITION"
@@ -320,6 +339,8 @@ class EventEngine:
             return "BELOW_THRESHOLD"
         if total_weight <= 0:
             return "ZERO_PROBABILITY"
+        if not check_connectivity:
+            return None
         trial = state.transition_copy(include_history=False)
         try:
             trial.relocate(atom_id, destination_key)

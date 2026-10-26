@@ -35,6 +35,7 @@ import { simulationStatusPresentation } from "../simulations/statusPresentation"
 import { createSimulationStore, type SimulationRecord } from "../store/simulationStore";
 import { StructureEditor } from "../structure/StructureEditor";
 import { WorkspaceTabs } from "./WorkspaceTabs";
+import { ComputeStatus } from "./ComputeStatus";
 import "./app.css";
 
 export type ModelingMethod = "monte_carlo" | "cellular_automata";
@@ -505,6 +506,7 @@ export function App() {
             <h1>Моделирование облучения</h1>
           </div>
         </div>
+        <ComputeStatus />
         <span className="simulation-counter">
           <strong>{visibleRecords.length}</strong>
           {visibleRecords.length === 1 ? " симуляция" : " симуляций"}

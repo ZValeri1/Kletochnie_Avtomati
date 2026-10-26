@@ -1739,3 +1739,11 @@ textarea:focus-visible {
     width: 92px;
   }
 }
+/* Execution device is informational; fallback never needs user intervention. */
+.compute-status {
+  color: var(--muted, #9bb0c5);
+  font-size: 0.85rem;
+  padding: 0.35rem 0.65rem;
+  border: 1px solid #304459;
+  border-radius: 6px;
+}

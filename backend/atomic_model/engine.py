@@ -22,6 +22,7 @@ from backend.atomic_model.initialization import Initializer
 from backend.atomic_model.metrics import MetricsCalculator
 from backend.atomic_model.state import SimulationState
 from backend.atomic_model.topology import Topology
+from backend.atomic_model.acceleration import get_compute_backend
 from backend.contracts.simulation import SimulationMetrics
 
 
@@ -41,7 +42,8 @@ class StepResult:
 
 
 class SimulationEngine:
-    def __init__(self) -> None:
+    def __init__(self, *, compute_backend=None) -> None:
+        self.compute_backend = compute_backend or get_compute_backend()
         self.metrics_calculator = MetricsCalculator()
         self.executor = EventExecutor()
         self.initializer = Initializer()
@@ -79,7 +81,7 @@ class SimulationEngine:
             atom_id = random_source.choice(sorted(source.atoms))
             q_n = source.configuration["q_max_ev"] * random_source.betavariate(1, 4)
             q_thr = source.configuration["q_thr_ev"]
-            event_engine = EventEngine(source.configuration)
+            event_engine = EventEngine(source.configuration, compute_backend=self.compute_backend)
             execution = None
             candidate = None
             if q_n < q_thr:
@@ -283,7 +285,7 @@ class SimulationEngine:
         self, source: SimulationState, atom_id: int, q_test: float
     ) -> list[ProbabilityOutcome]:
         topology = self._topology(source.configuration)
-        return EventEngine(source.configuration).probabilities(
+        return EventEngine(source.configuration, compute_backend=self.compute_backend).probabilities(
             topology, source, atom_id, q_test
         )
 

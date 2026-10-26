@@ -364,16 +364,27 @@ class Topology:
         origin = self._site(source)
         if radius not in (1, 2):
             raise TopologyError("UNSUPPORTED_SHELL")
-        return frozenset(
-            key for key, site in self.sites.items()
-            if key != source
-            # A contour is a square in 2D and a cube in 3D.  Sites on the
-            # other sub-lattice are shifted by half a cell, so their contour
-            # radii are 0.5 and 1.5 instead of 1 and 2.
-            and max(
-                abs(a - b) for a, b in zip(origin.half_units, site.half_units)
+        # Enumerate a bounded local shell, rather than scanning the whole field.
+        result = set()
+        for same_kind, offset in self._shell_offsets(origin.dimension, radius):
+            kind = origin.kind if same_kind else (
+                "interstitial" if origin.kind == "lattice" else "lattice"
             )
-            == (2 * radius if site.kind == origin.kind else 2 * radius - 1)
+            half_units = tuple(a + b for a, b in zip(origin.half_units, offset))
+            key = Site(kind, half_units, "outside").key
+            if key in self.sites:
+                result.add(key)
+        return frozenset(result)
+
+    @staticmethod
+    @lru_cache(maxsize=4)
+    def _shell_offsets(dimension: int, radius: int) -> tuple:
+        return tuple(
+            (same_kind, offset)
+            for same_kind in (True, False)
+            for extent in (2 * radius if same_kind else 2 * radius - 1,)
+            for offset in product(range(-extent, extent + 1, 2), repeat=dimension)
+            if max(map(abs, offset)) == extent
         )
 
     def all_shortest_paths(self, source: str, target: str) -> tuple[tuple[str, ...], ...]:

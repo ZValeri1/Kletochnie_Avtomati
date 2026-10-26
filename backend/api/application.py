@@ -152,6 +152,10 @@ def create_app(
     async def health():
         return {"status": "ok"}
 
+    @app.get("/api/compute")
+    async def compute_status():
+        return await manager.compute_status()
+
     app.include_router(create_simulations_router(manager))
     app.include_router(create_projects_router(manager, store))
     app.include_router(create_experiments_router(experiments))
