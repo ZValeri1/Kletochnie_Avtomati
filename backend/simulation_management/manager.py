@@ -109,6 +109,17 @@ class SimulationManager:
         )
         return SnapshotFactory.create_summary(session)
 
+    async def compute_status(self) -> dict:
+        return await asyncio.to_thread(self.engine.compute_backend.status)
+
+    async def step_for_research(self, simulation_id: str, expected_revision: int) -> int:
+        """Record the full act and metrics without rebuilding a render frame."""
+        session = self._session(simulation_id)
+        self._ensure_command_allowed(session, "step")
+        self._ensure_revision(session, expected_revision)
+        await self._execute_step(session, expected_revision, publish_updates=False)
+        return session.revision
+
     async def create_batch(
         self, configuration: dict, count: int, master_seed: int
     ) -> list:
@@ -356,7 +367,7 @@ class SimulationManager:
             raise RevisionConflictError("Revision conflict")
         allowed = {
             "initialization_mode", "n_v", "n_i", "n_as", "random_parameters",
-            "seed_init", "q_max_ev", "q_thr_ev", "weights",
+            "seed_init", "q_max_ev", "q_thr_ev", "weights", "method",
             "external_direction_probabilities",
         }
         if not isinstance(initialization, dict) or set(initialization) - allowed:

@@ -35,7 +35,7 @@ test("3D: accepted snapshot produces an interactive Three.js scene", async ({
   );
 });
 
-test("parallel simulations stay visually frozen until their final paused frame", async ({
+test("parallel fast simulations stream progress while the lattice frame stays frozen", async ({
   page,
 }) => {
   await page.goto("/");
@@ -55,10 +55,13 @@ test("parallel simulations stay visually frozen until their final paused frame",
     await rows.nth(1).getAttribute("data-revision"),
   );
 
-  await page.waitForTimeout(250);
-  expect(Number(await rows.nth(1).getAttribute("data-revision"))).toBe(
-    runningRevision,
-  );
+  // Summary revisions advance with streamed graph points. Only the lattice
+  // snapshot stays frozen until pause; a faster backend makes this distinction visible.
+  const canvas = page.getByTestId("renderer-2d");
+  const frozenFrame = await canvas.evaluate((node: HTMLCanvasElement) => node.toDataURL());
+  await expect.poll(async () => Number(await rows.nth(1).getAttribute("data-revision")))
+    .toBeGreaterThan(runningRevision);
+  expect(await canvas.evaluate((node: HTMLCanvasElement) => node.toDataURL())).toBe(frozenFrame);
   expect(Number(await rows.nth(0).getAttribute("data-revision"))).toBe(
     pausedRevision,
   );

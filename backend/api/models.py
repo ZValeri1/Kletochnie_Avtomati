@@ -112,8 +112,11 @@ class SimulationCreateRequest(VersionedRequest):
     seed_init: int | None = None
     seed_sim: int | None = None
     profile: Literal["fe_co60_physical"] = "fe_co60_physical"
+    method: Literal["monte_carlo", "cellular_automata"] = "monte_carlo"
     q_max_ev: float | None = Field(default=None, ge=0)
-    q_thr_ev: float = Field(default=20, ge=0)
+    # None lets the engine apply the method-specific default:
+    # 23 eV (E_d of nickel) for cellular_automata, 20 eV for monte_carlo.
+    q_thr_ev: float | None = Field(default=None, ge=0)
     weights: OperationWeights | None = None
     external_direction_probabilities: ExternalDirectionProbabilities | None = None
 
@@ -134,6 +137,7 @@ class ConfigurationPatchRequest(VersionedRequest):
     seed_init: int | None = None
     seed_sim: int | None = None
     profile: Literal["fe_co60_physical"] | None = None
+    method: Literal["monte_carlo", "cellular_automata"] | None = None
     q_max_ev: float | None = Field(default=None, ge=0)
     q_thr_ev: float | None = Field(default=None, ge=0)
     weights: OperationWeights | None = None

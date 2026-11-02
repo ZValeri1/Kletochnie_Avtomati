@@ -11,6 +11,7 @@
     "field_dimensions": [12, 12],
     "contour": null,
     "profile": "fe_co60_physical",
+    "method": "monte_carlo",
     "initialization_mode": "ordered",
     "n_v": 0,
     "n_i": 0,

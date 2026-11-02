@@ -1,0 +1,3 @@
+# Optional NVIDIA backend; requirements.txt remains usable without CUDA or NumPy.
+# CUDA Toolkit 13.x and a compatible driver, or install cupy-cuda13x[ctk].
+cupy-cuda13x==14.2.0

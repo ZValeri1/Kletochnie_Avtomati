@@ -33,16 +33,23 @@ import {
 import { SimulationList } from "../simulations/SimulationList";
 import { commandAvailability } from "../simulations/capabilities";
 import { simulationStatusPresentation } from "../simulations/statusPresentation";
-import { createSimulationStore } from "../store/simulationStore";
+import { createSimulationStore, type SimulationRecord } from "../store/simulationStore";
 import { StructureEditor } from "../structure/StructureEditor";
 import { WorkspaceTabs } from "./WorkspaceTabs";
+import { ComputeStatus } from "./ComputeStatus";
 import "./app.css";
+
+export type ModelingMethod = "monte_carlo" | "cellular_automata";
+
+const simulationMethod = (record: SimulationRecord): ModelingMethod =>
+  record.current_snapshot?.configuration.method ?? "monte_carlo";
 
 export function App() {
   const store = useRef(createSimulationStore()).current;
   const sockets = useRef(new Map<string, SimulationSubscription>());
   const editPreviewRequest = useRef(0);
   const [, refresh] = useReducer((value) => value + 1, 0);
+  const [method, setMethod] = useState<ModelingMethod>("monte_carlo");
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [projectName, setProjectName] = useState("project-a");
   const [projects, setProjects] = useState<ProjectStatus[]>([]);
@@ -158,7 +165,7 @@ export function App() {
 
   const create = (configuration: SimulationCreateInput) =>
     run(async () => {
-      const result = await simulationApi.create(configuration);
+      const result = await simulationApi.create({ ...configuration, method });
       store.applySummary(result);
       store.applySnapshot(result.snapshot);
       setSelectedId(result.simulation_id);
@@ -207,6 +214,18 @@ export function App() {
 
   const selected = selectedId ? store.getSimulation(selectedId) : null;
   const records = store.list();
+  const visibleRecords = records.filter(
+    (record) => simulationMethod(record) === method,
+  );
+
+  const switchMethod = (next: ModelingMethod) => {
+    if (next === method) return;
+    setMethod(next);
+    const match = store
+      .list()
+      .find((record) => simulationMethod(record) === next);
+    setSelectedId(match?.summary.simulation_id ?? null);
+  };
   const frame = selected?.current_snapshot
     ? mapSnapshotToRenderFrame(
         selected.current_snapshot,
@@ -531,22 +550,27 @@ export function App() {
             <h1>Моделирование облучения</h1>
           </div>
         </div>
+        <ComputeStatus />
         <span className="simulation-counter">
-          <strong>{records.length}</strong>
-          {records.length === 1 ? " симуляция" : " симуляций"}
+          <strong>{visibleRecords.length}</strong>
+          {visibleRecords.length === 1 ? " симуляция" : " симуляций"}
         </span>
       </header>
       <nav className="method-switcher" aria-label="Методы моделирования">
         <span>Методы моделирования</span>
         <div>
-          <button type="button" aria-current="page">
+          <button
+            type="button"
+            aria-current={method === "monte_carlo" ? "page" : undefined}
+            onClick={() => switchMethod("monte_carlo")}
+          >
             Монте-Карло
           </button>
           <button
             type="button"
-            className="method-coming-soon"
-            disabled
-            title="Метод клеточных автоматов пока недоступен"
+            data-testid="method-cellular-automata"
+            aria-current={method === "cellular_automata" ? "page" : undefined}
+            onClick={() => switchMethod("cellular_automata")}
           >
             Клеточные автоматы
           </button>
@@ -805,6 +829,7 @@ export function App() {
             />
           )}
           <ConfigurationEditor
+            method={method}
             onCreate={create}
             onConfigure={configure}
             currentSnapshot={selected?.current_snapshot}
@@ -832,7 +857,7 @@ export function App() {
 
         <aside className="sessions-area">
           <SimulationList
-            records={records}
+            records={visibleRecords}
             selectedId={selectedId}
             onSelect={setSelectedId}
             onCommand={command}

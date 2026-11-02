@@ -148,6 +148,7 @@ export type SimulationCreateInput = {
   seed_init: number;
   seed_sim: number;
   profile?: "fe_co60_physical";
+  method?: "monte_carlo" | "cellular_automata";
   q_max_ev: number;
   q_thr_ev: number;
   weights: OperationWeightsInput;
