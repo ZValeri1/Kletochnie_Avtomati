@@ -301,7 +301,7 @@ class SimulationEngine:
         allowed = {
             "dimensions", "contour", "profile", "initialization_mode",
             "n_v", "n_i", "n_as", "random_parameters", "seed_init", "seed_sim",
-            "q_max_ev", "q_thr_ev", "weights",
+            "q_max_ev", "q_thr_ev", "weights", "external_direction_probabilities",
         }
         unknown = set(config) - allowed
         if unknown:
@@ -312,6 +312,10 @@ class SimulationEngine:
         config.setdefault("q_max_ev", 82.0)
         config.setdefault("q_thr_ev", 20.0)
         config.setdefault("weights", {})
+        config.setdefault(
+            "external_direction_probabilities",
+            dict(EventEngine.DEFAULT_EXTERNAL_DIRECTION_PROBABILITIES),
+        )
         if not isinstance(config["dimensions"], list) or len(config["dimensions"]) not in (2, 3):
             raise ValueError("dimensions must contain two or three axes")
         if any(not isinstance(size, int) or isinstance(size, bool) or size < 2 for size in config["dimensions"]):
@@ -341,6 +345,22 @@ class SimulationEngine:
             for value in config["weights"].values()
         ):
             raise ValueError("transition probabilities must be in the range 0..1")
+        direction_probabilities = config["external_direction_probabilities"]
+        if (
+            not isinstance(direction_probabilities, dict)
+            or set(direction_probabilities)
+            != set(EventEngine.DEFAULT_EXTERNAL_DIRECTION_PROBABILITIES)
+            or any(
+                not isinstance(value, (int, float))
+                or isinstance(value, bool)
+                or not 0 <= value <= 1
+                for value in direction_probabilities.values()
+            )
+            or abs(sum(direction_probabilities.values()) - 1.0) > 1e-9
+        ):
+            raise ValueError(
+                "external direction probabilities must contain three values summing to 1"
+            )
         effective = EventEngine.effective_source_probabilities(config["weights"])
         for source_kind in ("lattice", "interstitial"):
             for left_suffix, right_suffix in (

@@ -186,6 +186,21 @@ class EffectiveWeights(BaseModel):
     from_interstitial_outside: FiniteFloat = Field(ge=0, le=1)
 
 
+class ExternalDirectionProbabilities(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    toward_metal: FiniteFloat = Field(ge=0, le=1)
+    along_surface: FiniteFloat = Field(ge=0, le=1)
+    away_from_metal: FiniteFloat = Field(ge=0, le=1)
+
+    @model_validator(mode="after")
+    def sum_to_one(self):
+        total = self.toward_metal + self.along_surface + self.away_from_metal
+        if abs(total - 1.0) > 1e-9:
+            raise ValueError("external direction probabilities must sum to 1")
+        return self
+
+
 class SimulationConfiguration(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -205,6 +220,7 @@ class SimulationConfiguration(BaseModel):
     q_max_ev: FiniteFloat = Field(ge=0)
     q_thr_ev: FiniteFloat = Field(ge=0)
     weights: EffectiveWeights
+    external_direction_probabilities: ExternalDirectionProbabilities
 
     @model_validator(mode="after")
     def dimensions_match(self):
@@ -304,6 +320,7 @@ class JournalExport(BaseModel):
 
     schema_version: Literal[1] = 1
     simulation_id: str
+    name: str | None = None
     revision: int = Field(ge=0)
     configuration: SimulationConfiguration
     events: tuple[SimulationEvent, ...]
@@ -343,6 +360,7 @@ class SimulationSummary(BaseModel):
 
     schema_version: Literal[1] = 1
     simulation_id: str
+    name: str | None = None
     status: SimulationStatusValue
     revision: int = 0
     seed_init: int | None = None

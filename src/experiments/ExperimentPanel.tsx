@@ -16,12 +16,16 @@ export function ExperimentPanel({
   disabled,
   onCreate,
   onCancel,
+  onReport,
+  reporting,
 }: {
   status: ExperimentStatus | null;
   results: ExperimentResults | null;
   disabled: boolean;
   onCreate: (repetitions: number, steps: number, masterSeed: number) => void;
   onCancel: () => void;
+  onReport?: () => void;
+  reporting?: boolean;
 }) {
   const [repetitions, setRepetitions] = useState(5);
   const [steps, setSteps] = useState(100);
@@ -90,6 +94,22 @@ export function ExperimentPanel({
       )}
       {results && (
         <div className="experiment-results">
+          <p className="muted">
+            Отчёт включает начальные параметры, графики каждого завершённого
+            испытания, сводные графики и данные CSV/JSON.
+          </p>
+          <button
+            data-testid="export-experiment-report"
+            disabled={
+              reporting ||
+              !onReport ||
+              status?.status === "RUNNING" ||
+              status?.status === "PENDING"
+            }
+            onClick={onReport}
+          >
+            {reporting ? "Формирование отчёта…" : "Скачать отчёт серии (ZIP)"}
+          </button>
           <h3>Запуски</h3>
           <div className="table-scroll">
             <table>

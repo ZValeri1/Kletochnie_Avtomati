@@ -168,6 +168,37 @@ def test_snapshot_configuration_rejects_a_missing_effective_weight():
         snapshot.model_validate(payload)
 
 
+def test_external_direction_probabilities_are_configurable_and_normalized():
+    request = symbol("backend.api.models", "SimulationCreateRequest")
+    configured = request.model_validate(
+        {
+            "dimensions": [4, 4],
+            "external_direction_probabilities": {
+                "toward_metal": 0.6,
+                "along_surface": 0.25,
+                "away_from_metal": 0.15,
+            },
+        }
+    )
+
+    assert configured.external_direction_probabilities.model_dump() == {
+        "toward_metal": 0.6,
+        "along_surface": 0.25,
+        "away_from_metal": 0.15,
+    }
+    with pytest.raises(ValidationError):
+        request.model_validate(
+            {
+                "dimensions": [4, 4],
+                "external_direction_probabilities": {
+                    "toward_metal": 0.5,
+                    "along_surface": 0.3,
+                    "away_from_metal": 0.3,
+                },
+            }
+        )
+
+
 @pytest.mark.parametrize("field", ["q_n", "q_thr", "operation_weight"])
 def test_event_rejects_a_missing_physical_field(field):
     event = symbol("backend.contracts.simulation", "SimulationEvent")

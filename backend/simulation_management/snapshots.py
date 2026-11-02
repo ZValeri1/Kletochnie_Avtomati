@@ -48,6 +48,10 @@ class SnapshotFactory:
             raw = deepcopy(session.last_valid_snapshot)
             dimensions = tuple(raw.get("dimensions", session.configuration.get("dimensions", (4, 4))))
             raw_configuration = deepcopy(raw["configuration"])
+            raw_configuration.setdefault(
+                "external_direction_probabilities",
+                dict(EventEngine.DEFAULT_EXTERNAL_DIRECTION_PROBABILITIES),
+            )
             raw_weights = raw_configuration.get("weights", {})
             raw_configuration["weights"] = {
                 **raw_weights,
@@ -157,6 +161,7 @@ class SnapshotFactory:
     def create_summary(session) -> SimulationSummary:
         return SimulationSummary(
             simulation_id=session.simulation_id,
+            name=getattr(session, "name", None),
             status=session.status.value,
             revision=session.revision,
             seed_init=session.configuration.get("seed_init"),
@@ -195,6 +200,10 @@ class SnapshotFactory:
             q_max_ev=configuration["q_max_ev"],
             q_thr_ev=configuration["q_thr_ev"],
             weights=effective_weights,
+            external_direction_probabilities=configuration.get(
+                "external_direction_probabilities",
+                EventEngine.DEFAULT_EXTERNAL_DIRECTION_PROBABILITIES,
+            ),
         )
 
     @staticmethod

@@ -75,6 +75,11 @@ const defaultRandom = {
   interstitials: { mu: 1, sigma: 0.5 },
   adatoms: { mu: 0, sigma: 0.25 },
 };
+const defaultExternalDirectionProbabilities = {
+  toward_metal: 0.5,
+  along_surface: 0.3,
+  away_from_metal: 0.2,
+};
 
 const defectCountLabels = {
   n_v: "Начальные вакансии",
@@ -110,6 +115,10 @@ const formValues = (snapshot?: SimulationSnapshot | null) => {
     qMax: configuration?.q_max_ev ?? 82,
     qThr: configuration?.q_thr_ev ?? 20,
     weights: { ...defaultWeights, ...configuration?.weights },
+    externalDirectionProbabilities: {
+      ...defaultExternalDirectionProbabilities,
+      ...configuration?.external_direction_probabilities,
+    },
     random: { ...defaultRandom, ...configuration?.random_parameters },
   };
 };
@@ -136,6 +145,9 @@ export function ConfigurationEditor({
   const [qMax, setQMax] = useState(initial.qMax);
   const [qThr, setQThr] = useState(initial.qThr);
   const [weights, setWeights] = useState(initial.weights);
+  const [externalDirectionProbabilities, setExternalDirectionProbabilities] = useState(
+    initial.externalDirectionProbabilities,
+  );
   const [error, setError] = useState("");
   const [random, setRandom] = useState(initial.random);
   const configurationKey = currentSnapshot ? JSON.stringify(currentSnapshot.configuration) : "";
@@ -151,6 +163,7 @@ export function ConfigurationEditor({
     setQMax(next.qMax);
     setQThr(next.qThr);
     setWeights(next.weights);
+    setExternalDirectionProbabilities(next.externalDirectionProbabilities);
     setRandom(next.random);
   }, [currentSnapshot?.simulation_id, configurationKey]);
 
@@ -173,6 +186,20 @@ export function ConfigurationEditor({
     }
     if (Object.values(weights).some((value) => !Number.isFinite(value) || value < 0 || value > 1)) {
       setError("Все вероятности должны быть числами от 0 до 1.");
+      return null;
+    }
+    if (
+      Object.values(externalDirectionProbabilities).some(
+        (value) => !Number.isFinite(value) || value < 0 || value > 1,
+      )
+      || Math.abs(
+        Object.values(externalDirectionProbabilities).reduce(
+          (sum, value) => sum + value,
+          0,
+        ) - 1,
+      ) > 1e-9
+    ) {
+      setError("Вероятности движения внешнего атома должны быть от 0 до 1 и в сумме давать 1.");
       return null;
     }
     for (const group of sourceProbabilityGroups) {
@@ -199,6 +226,7 @@ export function ConfigurationEditor({
       q_max_ev: qMax,
       q_thr_ev: qThr,
       weights,
+      external_direction_probabilities: externalDirectionProbabilities,
     };
   };
 
@@ -238,6 +266,7 @@ export function ConfigurationEditor({
           <p>
             Три вероятности перемножаются и делятся на число доступных позиций
             с той же комбинацией типа, контура и положения относительно металла.
+            Для движения снаружи дополнительно учитывается вероятность направления.
           </p>
           <code>Pᵢ = P(тип) × P(контур) × P(положение) / N</code>
         </div>
@@ -288,10 +317,13 @@ export function ConfigurationEditor({
           </section>
         ))}
         <section className="weight-section" aria-labelledby="external-position-probabilities-title">
-          <div className="weight-section-heading"><span>3</span><div><h3 id="external-position-probabilities-title">Начальная позиция: снаружи металла</h3><p>Вероятность входа по умолчанию равна 0, но её можно изменить.</p></div></div>
+          <div className="weight-section-heading"><span>3</span><div><h3 id="external-position-probabilities-title">Начальная позиция: снаружи металла</h3><p>Направления к поверхности, вдоль неё и наружу задаются отдельными вероятностями.</p></div></div>
           <div className="weight-rows">
             <label className="weight-row"><span className="weight-route"><strong>Внутрь металла</strong></span><span className="weight-input-wrap"><span>P</span><input aria-label={probabilityLabels.get("external_metal")} data-testid="weight-external-metal" type="number" min={0} max={1} step={0.01} value={weights.external_metal} onChange={(event) => setWeights({ ...weights, external_metal: number(event.target.value), external_external: 1 - number(event.target.value) })} /></span></label>
             <label className="weight-row"><span className="weight-route"><strong>Снаружи металла</strong></span><span className="weight-input-wrap"><span>P</span><input aria-label="Снаружи металла для внешнего атома" data-testid="probability-external-outside" type="number" min={0} max={1} step={0.01} value={1 - weights.external_metal} onChange={(event) => setWeights({ ...weights, external_metal: 1 - number(event.target.value), external_external: number(event.target.value) })} /></span></label>
+            <label className="weight-row"><span className="weight-route"><strong>К поверхности металла</strong></span><span className="weight-input-wrap"><span>P</span><input aria-label="К поверхности металла" data-testid="probability-external-toward" type="number" min={0} max={1} step={0.01} value={externalDirectionProbabilities.toward_metal} onChange={(event) => setExternalDirectionProbabilities({ ...externalDirectionProbabilities, toward_metal: number(event.target.value) })} /></span></label>
+            <label className="weight-row"><span className="weight-route"><strong>Вдоль поверхности</strong></span><span className="weight-input-wrap"><span>P</span><input aria-label="Вдоль поверхности" data-testid="probability-external-along" type="number" min={0} max={1} step={0.01} value={externalDirectionProbabilities.along_surface} onChange={(event) => setExternalDirectionProbabilities({ ...externalDirectionProbabilities, along_surface: number(event.target.value) })} /></span></label>
+            <label className="weight-row"><span className="weight-route"><strong>От поверхности металла</strong></span><span className="weight-input-wrap"><span>P</span><input aria-label="От поверхности металла" data-testid="probability-external-away" type="number" min={0} max={1} step={0.01} value={externalDirectionProbabilities.away_from_metal} onChange={(event) => setExternalDirectionProbabilities({ ...externalDirectionProbabilities, away_from_metal: number(event.target.value) })} /></span></label>
           </div>
         </section>
       </details>
@@ -329,6 +361,9 @@ export function ConfigurationEditor({
                 <dd data-testid={`locked-weight-${key.replaceAll("_", "-")}`}>{value}</dd>
               </div>
             ))}
+            <div><dt>Внешний атом → к поверхности</dt><dd data-testid="locked-probability-external-toward">{locked.external_direction_probabilities.toward_metal}</dd></div>
+            <div><dt>Внешний атом → вдоль поверхности</dt><dd data-testid="locked-probability-external-along">{locked.external_direction_probabilities.along_surface}</dd></div>
+            <div><dt>Внешний атом → от поверхности</dt><dd data-testid="locked-probability-external-away">{locked.external_direction_probabilities.away_from_metal}</dd></div>
           </dl>
         </details>
       )}

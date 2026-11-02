@@ -4,6 +4,7 @@ import pytest
 
 from backend.atomic_model.engine import SimulationEngine
 from backend.atomic_model.events import EventEngine, RandomSource
+from backend.atomic_model.state import SimulationState
 
 
 class ScriptedRandom:
@@ -545,6 +546,48 @@ def test_external_metal_defaults_to_zero_but_can_be_enabled():
     assert enabled_reverse.selectable
     assert enabled_reverse.position_weight == 0.2
     assert enabled_reverse.probability > 0
+
+
+def test_external_atom_uses_configured_direction_probabilities():
+    engine = SimulationEngine()
+    initial = engine.create_initial_state(
+        {
+            "dimensions": [4, 4],
+            "seed_init": 11,
+            "seed_sim": 12,
+            "q_max_ev": 40,
+            "q_thr_ev": 20,
+        },
+        RandomSource(12),
+    )
+    support_site = "lattice:3,5"
+    source_site = "lattice:2,5"
+    atom_id = max(initial.state.atoms) + 2
+    state = SimulationState.from_positions(
+        initial.topology,
+        {
+            **initial.state.atoms,
+            atom_id - 1: support_site,
+            atom_id: source_site,
+        },
+        configuration={
+            **initial.state.configuration,
+            "external_direction_probabilities": {
+                "toward_metal": 0.5,
+                "along_surface": 0.3,
+                "away_from_metal": 0.2,
+            },
+        },
+    )
+
+    outcomes = {
+        outcome.destination_site: outcome
+        for outcome in engine.probabilities(state, atom_id, 30)
+    }
+
+    assert outcomes["lattice:3,6"].position_weight == pytest.approx(0.5)
+    assert outcomes["lattice:2,6"].position_weight == pytest.approx(0.3)
+    assert outcomes["lattice:1,5"].position_weight == pytest.approx(0.2)
 
 
 def test_probability_diagnostics_do_not_mutate_state_or_rng():

@@ -36,6 +36,12 @@ class ProjectSerializer:
 
     @classmethod
     def _validate_simulation(cls, simulation: dict) -> None:
+        name = simulation.get("name")
+        if name is not None and (
+            not isinstance(name, str) or not name.strip() or len(name) > 120
+            or any(ord(char) < 32 for char in name)
+        ):
+            raise ProjectDataError("Simulation name is invalid")
         required = {
             "configuration",
             "state",

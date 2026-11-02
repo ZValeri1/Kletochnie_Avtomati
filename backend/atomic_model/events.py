@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import random
 from dataclasses import asdict, dataclass
+from functools import lru_cache
 from typing import Any, Literal
 
 from backend.atomic_model.errors import StateInvariantError, TopologyError
@@ -107,6 +108,11 @@ class EventRecord:
 
 
 class EventEngine:
+    DEFAULT_EXTERNAL_DIRECTION_PROBABILITIES = {
+        "toward_metal": 0.50,
+        "along_surface": 0.30,
+        "away_from_metal": 0.20,
+    }
     DEFAULT_OPERATION_WEIGHTS = {
         "lattice_vacancy": 0.70,
         "lattice_interstitial": 0.20,
@@ -159,6 +165,10 @@ class EventEngine:
         self.q_thr = float(configuration.get("q_thr_ev", 20.0))
         self.weights = dict(configuration.get("weights") or {})
         self.source_probabilities = self.effective_source_probabilities(self.weights)
+        self.external_direction_probabilities = {
+            **self.DEFAULT_EXTERNAL_DIRECTION_PROBABILITIES,
+            **(configuration.get("external_direction_probabilities") or {}),
+        }
 
     def probabilities(
         self,
@@ -220,7 +230,7 @@ class EventEngine:
                         "q_thr": self.q_thr,
                     }
                 )
-        group_sizes: dict[tuple[str, int, str], int] = {}
+        group_sizes: dict[tuple[str, int, str, str | None], int] = {}
         for item in raw:
             if not item["selectable"]:
                 continue
@@ -228,6 +238,9 @@ class EventEngine:
                 item["destination_kind"],
                 item["shell"],
                 "outside" if item["destination_relation"] == "outside" else "inside",
+                self._external_direction(
+                    source_key, item["destination_site"], topology
+                ),
             )
             group_sizes[group] = group_sizes.get(group, 0) + 1
         return [
@@ -242,6 +255,9 @@ class EventEngine:
                             "outside"
                             if item["destination_relation"] == "outside"
                             else "inside",
+                            self._external_direction(
+                                source_key, item["destination_site"], topology
+                            ),
                         )
                     ]
                     if item["selectable"]
@@ -444,8 +460,41 @@ class EventEngine:
             inside_probability = float(
                 self.weights.get("external_metal", self.DEFAULT_OPERATION_WEIGHTS["external_metal"])
             )
-            return inside_probability if destination.metal_relation != "outside" else 1.0 - inside_probability
+            if destination.metal_relation != "outside":
+                return inside_probability
+            direction = self._external_direction(source_key, destination_key, topology)
+            return (
+                1.0 - inside_probability
+            ) * self.external_direction_probabilities[direction]
         relation = (
             "outside" if destination.metal_relation == "outside" else "inside"
         )
         return self._source_probability(f"from_{source.kind}_{relation}")
+
+    @classmethod
+    def _external_direction(
+        cls, source_key: str, destination_key: str, topology: Topology
+    ) -> str | None:
+        source = topology.sites[source_key]
+        destination = topology.sites[destination_key]
+        if (
+            source.metal_relation != "outside"
+            or destination.metal_relation != "outside"
+        ):
+            return None
+        source_distance = cls._distance_to_metal(source_key, topology)
+        destination_distance = cls._distance_to_metal(destination_key, topology)
+        if destination_distance < source_distance:
+            return "toward_metal"
+        if destination_distance > source_distance:
+            return "away_from_metal"
+        return "along_surface"
+
+    @staticmethod
+    @lru_cache(maxsize=32768)
+    def _distance_to_metal(site_key: str, topology: Topology) -> float:
+        site = topology.sites[site_key]
+        return min(
+            topology.distance(site, topology.sites[boundary_key])
+            for boundary_key in topology.metal_domain.boundary_keys
+        )

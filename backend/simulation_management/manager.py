@@ -60,6 +60,18 @@ class SimulationManager:
         self.scheduler = scheduler or SimulationScheduler(max_parallel_simulations)
         self.event_hub = event_hub or EventHub()
         self.sessions: dict[str, SimulationSession] = {}
+        self._simulation_number = 0
+
+    def _default_name(self):
+        self._simulation_number += 1
+        return f"Симуляция {self._simulation_number}"
+
+    async def rename(self, simulation_id: str, name: str):
+        session = self._session(simulation_id)
+        async with session.lock:
+            session.name = name
+            await self._publish_status(session)
+            return SnapshotFactory.create_summary(session)
 
     async def create(self, configuration: dict):
         config = deepcopy(configuration)
@@ -88,6 +100,7 @@ class SimulationManager:
             topology=initial.topology,
             random_source=random_source,
         )
+        session.name = self._default_name()
         session.last_valid_snapshot = SnapshotFactory.create(session)
         self.sessions[simulation_id] = session
         await self.event_hub.publish(
@@ -344,6 +357,7 @@ class SimulationManager:
         allowed = {
             "initialization_mode", "n_v", "n_i", "n_as", "random_parameters",
             "seed_init", "q_max_ev", "q_thr_ev", "weights",
+            "external_direction_probabilities",
         }
         if not isinstance(initialization, dict) or set(initialization) - allowed:
             raise PreparationCommandError("EDIT_NOT_ALLOWED")
@@ -1003,6 +1017,7 @@ class SimulationManager:
             return JournalExport.model_validate(
                 JournalExporter.build(
                     simulation_id=simulation_id,
+                    name=session.name,
                     revision=session.revision,
                     configuration=snapshot.configuration.model_dump(mode="json"),
                     events=deepcopy(session.state.events),
@@ -1083,6 +1098,7 @@ class SimulationManager:
                 simulations.append(
                     {
                         "simulation_id": simulation_id,
+                        "name": session.name,
                         "revision": session.revision,
                         "status": session.status.value,
                         "has_started": session.has_started,
@@ -1160,6 +1176,7 @@ class SimulationManager:
                     topology=topology,
                     random_source=random_source,
                 )
+                session.name = item.get("name") or self._default_name()
                 session.public_revision = int(item.get("revision", state.revision))
                 session.has_started = bool(
                     item.get("has_started", saved_status != SimulationStatus.PREPARATION)

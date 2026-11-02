@@ -67,6 +67,41 @@ def test_api_invalid_configuration_returns_a_versioned_error(tmp_path):
     assert response.json()["code"] == "VALIDATION_ERROR"
 
 
+def test_api_exposes_editable_external_direction_probabilities(tmp_path):
+    with client(tmp_path) as test_client:
+        created = create_simulation(test_client)
+        simulation_id = created["simulation_id"]
+
+        assert created["snapshot"]["configuration"][
+            "external_direction_probabilities"
+        ] == {
+            "toward_metal": 0.5,
+            "along_surface": 0.3,
+            "away_from_metal": 0.2,
+        }
+
+        response = test_client.patch(
+            f"/api/simulations/{simulation_id}/configuration",
+            json={
+                "expected_revision": 0,
+                "external_direction_probabilities": {
+                    "toward_metal": 0.6,
+                    "along_surface": 0.25,
+                    "away_from_metal": 0.15,
+                },
+            },
+        )
+
+    assert response.status_code == 200
+    assert response.json()["snapshot"]["configuration"][
+        "external_direction_probabilities"
+    ] == {
+        "toward_metal": 0.6,
+        "along_surface": 0.25,
+        "away_from_metal": 0.15,
+    }
+
+
 def test_api_lifecycle_run_pause_resume_stop(tmp_path):
     with client(tmp_path) as test_client:
         created = create_simulation(test_client)

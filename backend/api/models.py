@@ -2,13 +2,37 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic_core import PydanticCustomError
 
 
 class VersionedRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     schema_version: Literal[1] = 1
+
+
+class RenameSimulationRequest(VersionedRequest):
+    name: str = Field(min_length=1, max_length=120)
+
+    @field_validator("name")
+    @classmethod
+    def normalize_name(cls, value):
+        value = value.strip()
+        if not value or any(ord(char) < 32 for char in value):
+            raise PydanticCustomError("invalid_name", "Название должно содержать от 1 до 120 символов без переносов строк")
+        return value
+
+
+class SessionReportRequest(VersionedRequest):
+    simulation_ids: list[str] = Field(min_length=1)
+
+    @field_validator("simulation_ids")
+    @classmethod
+    def unique_ids(cls, value):
+        if len(set(value)) != len(value):
+            raise PydanticCustomError("duplicate_ids", "Simulation ids must be unique")
+        return value
 
 
 class DistributionParameters(BaseModel):
@@ -58,6 +82,21 @@ class OperationWeights(BaseModel):
     from_interstitial_outside: float | None = Field(default=None, ge=0, le=1)
 
 
+class ExternalDirectionProbabilities(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    toward_metal: float = Field(ge=0, le=1)
+    along_surface: float = Field(ge=0, le=1)
+    away_from_metal: float = Field(ge=0, le=1)
+
+    @model_validator(mode="after")
+    def sum_to_one(self):
+        total = self.toward_metal + self.along_surface + self.away_from_metal
+        if abs(total - 1.0) > 1e-9:
+            raise ValueError("external direction probabilities must sum to 1")
+        return self
+
+
 class SimulationCreateRequest(VersionedRequest):
     model_config = ConfigDict(extra="forbid")
 
@@ -76,6 +115,7 @@ class SimulationCreateRequest(VersionedRequest):
     q_max_ev: float | None = Field(default=None, ge=0)
     q_thr_ev: float = Field(default=20, ge=0)
     weights: OperationWeights | None = None
+    external_direction_probabilities: ExternalDirectionProbabilities | None = None
 
 
 class ConfigurationPatchRequest(VersionedRequest):
@@ -97,6 +137,7 @@ class ConfigurationPatchRequest(VersionedRequest):
     q_max_ev: float | None = Field(default=None, ge=0)
     q_thr_ev: float | None = Field(default=None, ge=0)
     weights: OperationWeights | None = None
+    external_direction_probabilities: ExternalDirectionProbabilities | None = None
 
     @model_validator(mode="after")
     def contains_a_patch(self):

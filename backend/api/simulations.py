@@ -4,6 +4,9 @@ from typing import Literal
 
 from fastapi import APIRouter, Query, Response, status
 from fastapi.responses import JSONResponse
+from starlette.concurrency import run_in_threadpool
+
+from backend.data_research.report import build_report
 
 from backend.contracts.simulation import (
     DestinationsResponse,
@@ -25,6 +28,8 @@ from backend.api.models import (
     ProbabilityRequest,
     RevisionRequest,
     RunRequest,
+    RenameSimulationRequest,
+    SessionReportRequest,
     SimulationCreateRequest,
     StepRequest,
 )
@@ -47,6 +52,27 @@ def create_simulations_router(manager) -> APIRouter:
     @router.get("", response_model=list[SimulationSummary])
     async def list_simulations():
         return [item.model_dump(mode="json") for item in await manager.list()]
+
+    @router.patch("/{simulation_id}/name", response_model=SimulationSummary)
+    async def rename_simulation(simulation_id: str, request: RenameSimulationRequest):
+        return (await manager.rename(simulation_id, request.name)).model_dump(mode="json")
+
+    @router.post("/report.zip")
+    async def download_session_report(request: SessionReportRequest):
+        # Explicit client queue membership excludes runs belonging to other tabs or series.
+        journals = [
+            (await manager.journal_export(simulation_id)).model_dump(mode="json")
+            for simulation_id in request.simulation_ids
+        ]
+        content = await run_in_threadpool(
+            build_report,
+            title="Все эксперименты сессии",
+            metadata={"simulation_count": len(journals), "simulation_ids": request.simulation_ids},
+            runs=[{**journal, "status": journal["final_snapshot"]["status"]} for journal in journals],
+        )
+        return Response(content, media_type="application/zip", headers={
+            "Content-Disposition": 'attachment; filename="session-report.zip"',
+        })
 
     @router.get("/{simulation_id}/snapshot", response_model=SimulationSnapshot)
     async def get_snapshot(simulation_id: str):
@@ -194,6 +220,21 @@ def create_simulations_router(manager) -> APIRouter:
         return (
             await manager.slice_atlas(simulation_id)
         ).model_dump(mode="json")
+
+    @router.get("/{simulation_id}/report.zip")
+    async def download_report(simulation_id: str):
+        journal = (await manager.journal_export(simulation_id)).model_dump(mode="json")
+        snapshot = journal["final_snapshot"]
+        content = await run_in_threadpool(
+            build_report,
+            title=f'Отчёт об испытании: {journal["name"]}' if journal["name"] else "Отчёт об испытании",
+            metadata={"simulation_id": simulation_id, "name": journal["name"], "revision": journal["revision"],
+                      "status": snapshot["status"]},
+            runs=[{**journal, "status": snapshot["status"]}],
+        )
+        return Response(content, media_type="application/zip", headers={
+            "Content-Disposition": 'attachment; filename="simulation-report.zip"',
+        })
 
     @router.get("/{simulation_id}/journal.json", response_model=JournalExport)
     async def download_journal(simulation_id: str):

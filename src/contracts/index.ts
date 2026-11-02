@@ -50,6 +50,11 @@ export type SimulationSnapshot = {
     q_max_ev: number;
     q_thr_ev: number;
     weights: Record<string, number>;
+    external_direction_probabilities: {
+      toward_metal: number;
+      along_surface: number;
+      away_from_metal: number;
+    };
   };
   dimensions: number[];
   atoms: AtomSnapshot[];
@@ -269,6 +274,7 @@ export type ResearchAggregate = {
 export type SimulationSummary = {
   schema_version: 1;
   simulation_id: string;
+  name?: string | null;
   status: SimulationStatus;
   revision: number;
   seed_init?: number | null;
@@ -432,6 +438,10 @@ export function decodeSimulationSnapshot(value: unknown): SimulationSnapshot {
   const configDimensions = configuration.dimensions;
   const fieldDimensions = configuration.field_dimensions;
   const weights = object(configuration.weights, "configuration.weights");
+  const externalDirectionProbabilities = object(
+    configuration.external_direction_probabilities,
+    "configuration.external_direction_probabilities",
+  );
   const randomParameters = object(
     configuration.random_parameters,
     "configuration.random_parameters",
@@ -499,7 +509,19 @@ export function decodeSimulationSnapshot(value: unknown): SimulationSnapshot {
         !finiteNumber(weights[key]) ||
         Number(weights[key]) < 0 ||
         Number(weights[key]) > 1,
-    )
+    ) ||
+    !["toward_metal", "along_surface", "away_from_metal"].every(
+      (key) =>
+        finiteNumber(externalDirectionProbabilities[key]) &&
+        Number(externalDirectionProbabilities[key]) >= 0 &&
+        Number(externalDirectionProbabilities[key]) <= 1,
+    ) ||
+    Math.abs(
+      Number(externalDirectionProbabilities.toward_metal) +
+        Number(externalDirectionProbabilities.along_surface) +
+        Number(externalDirectionProbabilities.away_from_metal) -
+        1,
+    ) > 1e-9
   ) {
     throw new Error("Invalid snapshot configuration");
   }
@@ -861,6 +883,7 @@ export function decodeSimulationSummary(value: unknown): SimulationSummary {
   version(payload);
   if (
     typeof payload.simulation_id !== "string" ||
+    !(payload.name === undefined || payload.name === null || typeof payload.name === "string") ||
     !Number.isInteger(payload.revision) ||
     Number(payload.revision) < 0 ||
     ![

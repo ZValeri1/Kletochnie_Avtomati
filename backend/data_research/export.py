@@ -4,10 +4,11 @@ class JournalExporter:
     """Build a browser download without creating a user-visible server path."""
 
     @staticmethod
-    def build(*, simulation_id, revision, configuration, events, metrics, final_snapshot):
+    def build(*, simulation_id, revision, configuration, events, metrics, final_snapshot, name=None):
         return {
             "schema_version": 1,
             "simulation_id": simulation_id,
+            "name": name,
             "revision": revision,
             "configuration": configuration,
             "events": events,

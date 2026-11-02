@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import random
 import uuid
+from copy import deepcopy
 from dataclasses import dataclass, field
 
 from backend.data_research.statistics import ResearchAggregate, StatisticsCalculator
@@ -27,6 +28,9 @@ class ExperimentRecord:
     master_seed: int
     bootstrap_seed: int
     total_steps: int
+    configurations: list[dict] = field(default_factory=list)
+    repetitions: int = 1
+    steps: int = 0
     status: str = "PENDING"
     completed_steps: int = 0
     successful_runs: list[dict] = field(default_factory=list)
@@ -111,6 +115,9 @@ class ExperimentService:
             master_seed=master_seed,
             bootstrap_seed=seed_source.randrange(2**63),
             total_steps=len(configurations) * repetitions * steps,
+            configurations=deepcopy(configurations),
+            repetitions=repetitions,
+            steps=steps,
         )
 
     async def _execute(self, record, configurations, repetitions, steps) -> None:

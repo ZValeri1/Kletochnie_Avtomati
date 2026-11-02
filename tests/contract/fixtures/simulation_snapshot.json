@@ -20,6 +20,11 @@
     "seed_sim": 12,
     "q_max_ev": 82.0,
     "q_thr_ev": 20.0,
+    "external_direction_probabilities": {
+      "toward_metal": 0.5,
+      "along_surface": 0.3,
+      "away_from_metal": 0.2
+    },
     "weights": {
       "lattice_vacancy": 0.7,
       "lattice_interstitial": 0.2,

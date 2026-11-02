@@ -19,6 +19,7 @@ import type {
 import { DiagnosticsPanel } from "../diagnostics/DiagnosticsPanel";
 import { ExperimentPanel } from "../experiments/ExperimentPanel";
 import { ExportPanel } from "../export/ExportPanel";
+import { downloadReport, downloadSessionReport } from "../export/downloadReport";
 import { JournalPanel } from "../journal/JournalPanel";
 import { MetricsPanel } from "../metrics/MetricsPanel";
 import { ProjectPanel } from "../projects/ProjectPanel";
@@ -64,6 +65,47 @@ export function App() {
   const [experimentResults, setExperimentResults] =
     useState<ExperimentResults | null>(null);
   const [message, setMessage] = useState("");
+  const [reporting, setReporting] = useState(false);
+  const pendingRenames = useRef(new Map<string, Promise<void>>());
+
+  const renameSimulation = (id: string, name: string): Promise<void> => {
+    const pending = simulationApi.rename(id, name).then((summary) => {
+      store.applySummary(summary);
+      refresh();
+    });
+    pendingRenames.current.set(id, pending);
+    void pending.finally(() => {
+      if (pendingRenames.current.get(id) === pending) pendingRenames.current.delete(id);
+    }).catch(() => undefined);
+    return pending;
+  };
+
+  const exportSession = () => {
+    const ids = store.list().map((record) => record.summary.simulation_id);
+    if (!ids.length || reporting) return;
+    setReporting(true);
+    void run(async () => {
+      try {
+        await Promise.all(pendingRenames.current.values());
+        await downloadSessionReport(ids);
+      } finally {
+        setReporting(false);
+      }
+    });
+  };
+
+  const exportReport = (kind: "simulations" | "experiments", id: string | null) => {
+    if (!id || reporting) return;
+    setReporting(true);
+    void run(async () => {
+      try {
+        await Promise.all(pendingRenames.current.values());
+        await downloadReport(kind, id);
+      } finally {
+        setReporting(false);
+      }
+    });
+  };
 
   const loadSideData = useCallback(
     async (simulationId: string) => {
@@ -350,6 +392,7 @@ export function App() {
 
   const save = (ids: string[]) =>
     run(async () => {
+      await Promise.all(pendingRenames.current.values());
       try {
         await simulationApi.saveProject(projectName, ids, false);
       } catch (error) {
@@ -387,6 +430,7 @@ export function App() {
   const exportJournal = () =>
     selectedId &&
     run(async () => {
+      await Promise.all(pendingRenames.current.values());
       const blob = await simulationApi.journal(selectedId);
       const url = URL.createObjectURL(blob);
       const link = document.createElement("a");
@@ -556,13 +600,12 @@ export function App() {
               <div>
                 <span className="section-kicker">Активная сессия</span>
                 <strong>
-                  Симуляция{" "}
-                  {Math.max(
+                  {selected.summary.name || `Симуляция ${Math.max(
                     1,
                     records.findIndex(
                       (record) => record.summary.simulation_id === selectedId,
                     ) + 1,
-                  )}
+                  )}`}
                 </strong>
               </div>
               <span
@@ -712,11 +755,15 @@ export function App() {
                       projects={projects}
                       simulations={records.map((record, index) => ({
                         id: record.summary.simulation_id,
-                        label: `Симуляция ${index + 1} · ${simulationStatusPresentation[record.summary.status].label}`,
+                        label: `${record.summary.name || `Симуляция ${index + 1}`} · ${simulationStatusPresentation[record.summary.status].label}`,
                       }))}
                     />
                     <ExportPanel
                       onExport={exportJournal}
+                      onReport={() => exportReport("simulations", selectedId)}
+                      onExportAll={exportSession}
+                      emptySession={records.length === 0}
+                      reporting={reporting}
                       disabled={!selectedId}
                     />
                   </div>
@@ -732,6 +779,8 @@ export function App() {
                     disabled={!selected?.current_snapshot}
                     onCreate={startExperiment}
                     onCancel={cancelExperiment}
+                    onReport={() => exportReport("experiments", experimentResults?.experiment_id ?? null)}
+                    reporting={reporting}
                   />
                 ),
               },
@@ -787,6 +836,9 @@ export function App() {
             selectedId={selectedId}
             onSelect={setSelectedId}
             onCommand={command}
+            onRename={renameSimulation}
+            onExportAll={exportSession}
+            reporting={reporting}
           />
         </aside>
       </div>

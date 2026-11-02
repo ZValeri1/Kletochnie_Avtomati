@@ -151,6 +151,11 @@ export type SimulationCreateInput = {
   q_max_ev: number;
   q_thr_ev: number;
   weights: OperationWeightsInput;
+  external_direction_probabilities: {
+    toward_metal: number;
+    along_surface: number;
+    away_from_metal: number;
+  };
 };
 
 export type ConfigurationPatchInput = Partial<SimulationCreateInput>;
@@ -162,6 +167,13 @@ export type PreparationEditInput =
   | { action: "boundary"; contour: [number, number][] };
 
 export const simulationApi = {
+  rename(simulationId: string, name: string): Promise<SimulationSummary> {
+    return requestJson(`/api/simulations/${encodeURIComponent(simulationId)}/name`, {
+      method: "PATCH",
+      body: { schema_version: 1, name },
+      decode: decodeSimulationSummary,
+    });
+  },
   create(
     configuration: SimulationCreateInput,
   ): Promise<SimulationCreatedResponse> {

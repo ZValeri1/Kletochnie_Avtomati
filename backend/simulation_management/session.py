@@ -52,6 +52,7 @@ class SimulationSession:
     random_source: RandomSource | None
     history: SimulationHistory
     last_valid_snapshot: object
+    name: str = ""
     error: ApplicationError | None = None
     public_revision: int = 0
     has_started: bool = False

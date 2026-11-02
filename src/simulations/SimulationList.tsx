@@ -1,22 +1,28 @@
 import type { SimulationRecord } from "../store/simulationStore";
 import { simulationStatusPresentation } from "./statusPresentation";
+import { SimulationName } from "./SimulationName";
 
 export function SimulationList({
   records,
   selectedId,
   onSelect,
   onCommand,
+  onRename,
+  onExportAll,
+  reporting,
 }: {
   records: SimulationRecord[];
   selectedId: string | null;
   onSelect: (id: string) => void;
   onCommand: (id: string, command: "run" | "pause" | "stop") => void;
+  onRename: (id: string, name: string) => Promise<void>;
+  onExportAll: () => void;
+  reporting?: boolean;
 }) {
   const sparkline = (record: SimulationRecord) => {
     const source = record.metrics.points;
-    const points = source[0]?.act_number > 0
-      ? [{ act_number: 0, d: 0 }, ...source]
-      : source;
+    const points =
+      source[0]?.act_number > 0 ? [{ act_number: 0, d: 0 }, ...source] : source;
     if (!points.length) return "4,24 104,24";
     const max = Math.max(1, ...points.map((point) => point.d));
     const maxAct = Math.max(1, ...points.map((point) => point.act_number));
@@ -42,8 +48,20 @@ export function SimulationList({
         </div>
         <span className="list-count">{records.length}</span>
       </div>
+      <button
+        data-testid="export-session-report"
+        disabled={!records.length || reporting}
+        onClick={onExportAll}
+      >
+        {reporting ? "Формирование отчёта…" : "Скачать все эксперименты (ZIP)"}
+      </button>
+      {records.length > 0 && (
+        <p className="muted">Двойной щелчок по названию — переименовать.</p>
+      )}
       {records.length === 0 && (
-        <p className="muted simulation-list-empty">Созданные запуски появятся здесь.</p>
+        <p className="muted simulation-list-empty">
+          Созданные запуски появятся здесь.
+        </p>
       )}
       {records.map((record, index) => (
         <article
@@ -57,17 +75,36 @@ export function SimulationList({
           onClick={() => onSelect(record.summary.simulation_id)}
         >
           <div className="simulation-row-copy">
-            <strong>Симуляция {index + 1}</strong>
-            <span className={`status-text status-${record.summary.status.toLowerCase()}`}>
+            <SimulationName
+              name={record.summary.name || `Симуляция ${index + 1}`}
+              onRename={(name) => onRename(record.summary.simulation_id, name)}
+            />
+            <span
+              className={`status-text status-${record.summary.status.toLowerCase()}`}
+            >
               {simulationStatusPresentation[record.summary.status].label}
             </span>
-            <small>Ревизия {record.summary.revision} · {record.connection_status === "connected" ? "онлайн" : "переподключение"}</small>
+            <small>
+              Ревизия {record.summary.revision} ·{" "}
+              {record.connection_status === "connected"
+                ? "онлайн"
+                : "переподключение"}
+            </small>
           </div>
-          <svg className="simulation-sparkline" viewBox="0 0 108 32" role="img" aria-label={`График симуляции ${index + 1}`}>
+          <svg
+            className="simulation-sparkline"
+            viewBox="0 0 108 32"
+            role="img"
+            aria-label={`График: ${record.summary.name || `Симуляция ${index + 1}`}`}
+          >
             <path d="M4 27H104" />
             <polyline points={sparkline(record)} />
-            <text x="4" y="31">0</text>
-            <text x="104" y="31" textAnchor="end">{lastAct(record)}</text>
+            <text x="4" y="31">
+              0
+            </text>
+            <text x="104" y="31" textAnchor="end">
+              {lastAct(record)}
+            </text>
           </svg>
           <div className="row-actions">
             <button

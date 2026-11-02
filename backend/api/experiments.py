@@ -2,10 +2,12 @@ from __future__ import annotations
 
 from dataclasses import asdict
 
-from fastapi import APIRouter, status
+from fastapi import APIRouter, Response, status
+from starlette.concurrency import run_in_threadpool
 
 from backend.api.models import ExperimentRequest
 from backend.contracts.experiments import ExperimentResults, ExperimentStatus
+from backend.data_research.report import build_report
 from backend.simulation_management.errors import InvalidSimulationCommandError
 
 
@@ -77,5 +79,30 @@ def create_experiments_router(service) -> APIRouter:
             master_seed=result.master_seed,
             bootstrap_seed=result.bootstrap_seed,
         ).model_dump(mode="json")
+
+    @router.get("/{experiment_id}/report.zip")
+    async def download_report(experiment_id: str):
+        try:
+            result = service.get_result(experiment_id)
+            record = service.get_status(experiment_id)
+        except ValueError as error:
+            raise InvalidSimulationCommandError(str(error)) from error
+        content = await run_in_threadpool(
+            build_report,
+            title="Отчёт об исследовательской серии",
+            metadata={"experiment_id": experiment_id, "status": public_status(record).status,
+                      "repetitions": record.repetitions, "steps": record.steps,
+                      "master_seed": result.master_seed, "bootstrap_seed": result.bootstrap_seed,
+                      "completed_steps": result.completed_steps, "total_steps": record.total_steps},
+            configurations=record.configurations,
+            runs=[{**run, "configuration": run["snapshot"]["configuration"],
+                   "revision": run["snapshot"]["revision"], "status": run["snapshot"]["status"]}
+                  for run in result.successful_runs],
+            failures=result.failed_runs,
+            aggregate=asdict(result.aggregate) if result.aggregate else None,
+        )
+        return Response(content, media_type="application/zip", headers={
+            "Content-Disposition": 'attachment; filename="experiment-report.zip"',
+        })
 
     return router

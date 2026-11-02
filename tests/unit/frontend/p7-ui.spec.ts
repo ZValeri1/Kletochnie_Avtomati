@@ -165,6 +165,15 @@ test("the probability editor exposes separate defaults for lattice and interstit
       ),
     );
   }
+  expect(markup).toMatch(
+    /data-testid="probability-external-toward"[^>]*value="0[.,]5"/,
+  );
+  expect(markup).toMatch(
+    /data-testid="probability-external-along"[^>]*value="0[.,]3"/,
+  );
+  expect(markup).toMatch(
+    /data-testid="probability-external-away"[^>]*value="0[.,]2"/,
+  );
 });
 
 test("the 3D structure editor keeps atom actions visible and explains the boundary limitation", async () => {

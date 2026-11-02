@@ -1427,6 +1427,22 @@ body {
   gap: 2px;
 }
 
+.simulation-name {
+  overflow-wrap: anywhere;
+  cursor: text;
+}
+
+.simulation-name-editor input {
+  width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+}
+
+.simulation-name-editor small[role="alert"] {
+  color: #fca5a5;
+  white-space: normal;
+}
+
 .simulation-row-copy small {
   overflow: hidden;
   color: var(--muted);
