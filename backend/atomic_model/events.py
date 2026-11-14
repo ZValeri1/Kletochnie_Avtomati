@@ -357,11 +357,15 @@ class EventEngine:
             return "ZERO_PROBABILITY"
         if not check_connectivity:
             return None
-        trial = state.transition_copy(include_history=False)
         try:
-            trial.relocate(atom_id, destination_key)
-            trial.validate(topology)
-        except StateInvariantError:
+            from backend.atomic_model.sparse_map import RelocatedOccupancy
+            state.validate(topology)
+            source = state.atoms[atom_id]
+            topology.validate_changed_occupancy(
+                RelocatedOccupancy(state.occupied, source, destination_key, atom_id),
+                (source, destination_key),
+            )
+        except (StateInvariantError, TopologyError):
             return "DISCONNECTED_RESULT"
         return None
 
@@ -515,6 +519,12 @@ class EventEngine:
     @lru_cache(maxsize=32768)
     def _distance_to_metal(site_key: str, topology: Topology) -> float:
         site = topology.sites[site_key]
+        from backend.atomic_model.regular_grid import RegularSites
+        if isinstance(topology.sites, RegularSites) and site.metal_relation == "outside":
+            # Distance to the nearest lattice point in an axis-aligned metal box.
+            return sum(min(abs(value - 2 * max(low, min(low + size - 1, value // 2))),
+                           abs(value - 2 * max(low, min(low + size - 1, (value + 1) // 2))))
+                       for value, low, size in zip(site.half_units, topology.metal_domain.offset, topology.dimensions)) / 2
         return min(
             topology.distance(site, topology.sites[boundary_key])
             for boundary_key in topology.metal_domain.boundary_keys

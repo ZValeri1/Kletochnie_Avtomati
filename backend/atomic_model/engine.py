@@ -78,7 +78,7 @@ class SimulationEngine:
         try:
             if not source.atoms:
                 raise InvalidEventError("NO_ATOMS")
-            atom_id = random_source.choice(sorted(source.atoms))
+            atom_id = random_source.choice(source.atom_ids())
             q_n = source.configuration["q_max_ev"] * random_source.betavariate(1, 4)
             q_thr = source.configuration["q_thr_ev"]
             event_engine = EventEngine(source.configuration, compute_backend=self.compute_backend)

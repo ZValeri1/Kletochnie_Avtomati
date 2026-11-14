@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import math
 import random
+from itertools import product
 from copy import deepcopy
 from dataclasses import dataclass
 from typing import Literal
@@ -17,6 +18,17 @@ InitializationMode = Literal[
 ]
 
 
+def _capacities(topology):
+    from backend.atomic_model.regular_grid import RegularSites
+    n0 = len(topology.metal_domain.lattice_keys)
+    if isinstance(topology.sites, RegularSites):
+        interior = math.prod(size - 1 for size in topology.dimensions)
+        return {"vacancies": n0, "interstitials": interior, "adatoms": len(topology.sites) - n0 - interior}
+    return {"vacancies": n0,
+            "interstitials": sum(site.kind == "interstitial" and site.metal_relation == "interior" for site in topology.sites.values()),
+            "adatoms": sum(site.metal_relation == "outside" for site in topology.sites.values())}
+
+
 @dataclass(frozen=True)
 class InitializationCounts:
     n0: int
@@ -27,18 +39,9 @@ class InitializationCounts:
 
     @classmethod
     def from_state(cls, topology: Topology, state: SimulationState) -> InitializationCounts:
-        n0 = len(topology.metal_domain.lattice_keys)
-        n_v = n0 - len(topology.metal_domain.lattice_keys & state.occupied.keys())
-        n_i = sum(
-            topology.sites[key].kind == "interstitial"
-            and topology.sites[key].metal_relation == "interior"
-            for key in state.atoms.values()
-        )
-        n_as = sum(
-            topology.sites[key].metal_relation == "outside"
-            for key in state.atoms.values()
-        )
-        return cls(n0, len(state.atoms), n_v, n_i, n_as)
+        from backend.atomic_model.metrics import MetricsCalculator
+        metrics = MetricsCalculator().calculate(topology, state)
+        return cls(len(topology.metal_domain.lattice_keys), len(state.atoms), metrics.n_v, metrics.n_i, metrics.n_as)
 
 
 @dataclass(frozen=True)
@@ -68,16 +71,7 @@ class InitializationSpec:
                 raise InitializationError("INVALID_DEFECT_COUNT")
             if set(parameters) - {"vacancies", "interstitials", "adatoms"}:
                 raise InitializationError("INVALID_DEFECT_COUNT")
-            capacities = {
-                "vacancies": n0,
-                "interstitials": sum(
-                    site.kind == "interstitial" and site.metal_relation == "interior"
-                    for site in topology.sites.values()
-                ),
-                "adatoms": sum(
-                    site.metal_relation == "outside" for site in topology.sites.values()
-                ),
-            }
+            capacities = _capacities(topology)
             defaults = {
                 "vacancies": (0.05 * n0, 0.02 * n0),
                 "interstitials": (0.05 * n0, 0.02 * n0),
@@ -143,6 +137,10 @@ class Initializer:
             state.validate(topology)
             return state
 
+        from backend.atomic_model.regular_grid import RegularSites
+        if isinstance(topology.sites, RegularSites):
+            return self._regular_build(topology, configuration, spec, rng)
+
         interior = sorted(
             key for key, site in topology.sites.items()
             if site.kind == "interstitial" and site.metal_relation == "interior"
@@ -206,4 +204,50 @@ class Initializer:
                 spec.n_v, spec.n_i, spec.n_as
             ):
                 return state
+        raise InitializationError("INITIAL_CONFIGURATION_INFEASIBLE")
+
+    def _regular_build(self, topology, configuration, spec, rng):
+        from backend.atomic_model.regular_grid import key_at
+        capacities = _capacities(topology)
+        if spec.n_i > capacities["interstitials"] or spec.n_as > capacities["adatoms"]:
+            raise InitializationError("INITIAL_CONFIGURATION_INFEASIBLE")
+        interior = (sorted(key_at("interstitial", point) for point in product(*(
+            range(2 * low + 1, 2 * (low + size - 1), 2)
+            for low, size in zip(topology.metal_domain.offset, topology.dimensions)))) if spec.n_i else [])
+        for _ in range(self.MAX_PLACEMENT_ATTEMPTS):
+            state = SimulationState.create_ideal(topology, configuration)
+            # sample(range(n)) consumes exactly the same RNG draws as sample(sorted(keys)).
+            for atom_id in rng.sample(range(capacities["vacancies"]), spec.n_v):
+                del state.occupied[state.atoms[atom_id]]
+                del state.atoms[atom_id]
+            interior_pool = ([key for key in interior if any(neighbor in state.occupied
+                              for neighbor in topology.contact_neighbors(key))] if spec.n_v else interior)
+            if len(interior_pool) < spec.n_i:
+                continue
+            next_atom_id = capacities["vacancies"]
+            for key in rng.sample(interior_pool, spec.n_i):
+                state.atoms[next_atom_id] = key
+                state.occupied[key] = next_atom_id
+                next_atom_id += 1
+            frontier = ({neighbor for boundary in topology.metal_domain.boundary_keys if boundary in state.occupied
+                         for neighbor in topology.contact_neighbors(boundary)
+                         if topology.sites[neighbor].metal_relation == "outside" and neighbor not in state.occupied}
+                        if spec.n_as else set())
+            for _ in range(spec.n_as):
+                if not frontier:
+                    break
+                key = rng.choice(sorted(frontier))
+                frontier.remove(key)
+                state.atoms[next_atom_id] = key
+                state.occupied[key] = next_atom_id
+                next_atom_id += 1
+                frontier.update(neighbor for neighbor in topology.contact_neighbors(key)
+                                if topology.sites[neighbor].metal_relation == "outside" and neighbor not in state.occupied)
+            if next_atom_id != capacities["vacancies"] + spec.n_i + spec.n_as:
+                continue
+            try:
+                state.validate(topology)
+            except StateInvariantError:
+                continue
+            return state
         raise InitializationError("INITIAL_CONFIGURATION_INFEASIBLE")

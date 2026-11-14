@@ -115,6 +115,16 @@ class SnapshotFactory:
         topology = session.topology
         metrics = MetricsCalculator().calculate(topology, state)
         counts = InitializationCounts.from_state(topology, state)
+        atom_ids = state.atom_ids()
+        render_sampled = len(atom_ids) > 10000
+        if render_sampled:
+            # A bounded overview; exact state stays in the model and project export.
+            stride = max(1, len(atom_ids) // 4096)
+            selected_ids = set(atom_ids[::stride][:4096])
+            if hasattr(state.atoms, "changed_keys"):
+                from itertools import islice
+                selected_ids.update(islice((key for key in state.atoms.changed_keys() if key in state.atoms), 4096))
+            atom_ids = sorted(selected_ids)
         atoms = tuple(
             AtomSnapshot(
                 id=atom_id,
@@ -124,12 +134,18 @@ class SnapshotFactory:
                 metal_relation=topology.sites[site_key].metal_relation,
                 visual_state=cls._visual_state(topology, site_key),
             )
-            for atom_id, site_key in sorted(state.atoms.items())
+            for atom_id in atom_ids
+            for site_key in (state.atoms[atom_id],)
         )
+        from backend.atomic_model.regular_grid import IdealOccupied
+        from itertools import islice
+        vacancy_candidates = (state.occupied.changed_keys()
+                              if isinstance(getattr(state.occupied, "baseline", None), IdealOccupied)
+                              else topology.metal_domain.lattice_keys)
         vacancies = tuple(
-            site.coordinate
-            for site in topology.sites.values()
-            if site.key in topology.metal_domain.lattice_keys and site.key not in state.occupied
+            topology.sites[key].coordinate for key in islice(
+                (key for key in vacancy_candidates if key in topology.metal_domain.lattice_keys and key not in state.occupied),
+                8192 if render_sampled else None)
         )
         return SimulationSnapshot(
             simulation_id=session.simulation_id,
@@ -140,6 +156,7 @@ class SnapshotFactory:
             configuration=cls._configuration(session.configuration, topology),
             dimensions=topology.movement_field.dimensions,
             atoms=atoms,
+            **({"render_sampled": True, "rendered_atom_count": len(atoms)} if render_sampled else {}),
             vacancies=vacancies,
             metrics=metrics,
             counts=DefectCounts(**counts.__dict__),

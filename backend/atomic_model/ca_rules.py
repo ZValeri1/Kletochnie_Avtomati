@@ -241,8 +241,7 @@ def cascade_chain(
     e_res = q_n / 2
 
     # Virtual state: track occupancy as we add candidates
-    occupied = dict(state.occupied)
-    atoms = dict(state.atoms)
+    occupied = state.occupied.fork() if hasattr(state.occupied, "fork") else dict(state.occupied)
 
     # Queue: (site_key, energy) of displaced atoms that may continue
     queue = [(first_candidate.destination_key, e_res)]
@@ -273,7 +272,6 @@ def cascade_chain(
         # Update virtual occupancy
         del occupied[target_site]
         occupied[dest] = target_atom
-        atoms[target_atom] = dest
         visited.add(target_site)
         visited.add(dest)
 

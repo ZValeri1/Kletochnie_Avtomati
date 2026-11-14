@@ -1,6 +1,7 @@
 import type { SimulationRecord } from "../store/simulationStore";
 import { simulationStatusPresentation } from "./statusPresentation";
 import { SimulationName } from "./SimulationName";
+import { samplePlot } from "../metrics/samplePlot";
 
 export function SimulationList({
   records,
@@ -20,12 +21,12 @@ export function SimulationList({
   reporting?: boolean;
 }) {
   const sparkline = (record: SimulationRecord) => {
-    const source = record.metrics.points;
+    const source = samplePlot(record.metrics.points, (point) => point.d, 100);
     const points =
       source[0]?.act_number > 0 ? [{ act_number: 0, d: 0 }, ...source] : source;
     if (!points.length) return "4,24 104,24";
-    const max = Math.max(1, ...points.map((point) => point.d));
-    const maxAct = Math.max(1, ...points.map((point) => point.act_number));
+    const max = points.reduce((n, point) => Math.max(n, point.d), 1);
+    const maxAct = points.reduce((n, point) => Math.max(n, point.act_number), 1);
     const width = 100;
     return points
       .map((point) => {
@@ -37,7 +38,7 @@ export function SimulationList({
   };
 
   const lastAct = (record: SimulationRecord) =>
-    Math.max(0, ...record.metrics.points.map((point) => point.act_number));
+    record.metrics.points.reduce((n, point) => Math.max(n, point.act_number), 0);
 
   return (
     <section className="panel simulation-list">

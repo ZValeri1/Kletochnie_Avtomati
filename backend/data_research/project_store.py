@@ -108,24 +108,19 @@ class ProjectStore:
         for path in sorted(self.root.iterdir()):
             if path.is_dir() and not path.name.startswith("."):
                 try:
-                    payload = self.load(path.name)
-                except ProjectDataError:
-                    continue
-                try:
+                    if not (path / "project.json").is_file():
+                        continue
                     manifest = json.loads(
                         (path / "manifest.json").read_text(encoding="utf-8")
                     )
-                    created_at = manifest["created_at"]
-                    updated_at = manifest["updated_at"]
-                except (OSError, json.JSONDecodeError, KeyError):
+                    if manifest.get("project_id") != path.name or not PROJECT_PATTERN.fullmatch(path.name):
+                        continue
+                    metadata = ProjectMetadata.model_validate(manifest)
+                except (OSError, ValueError, TypeError):
                     continue
-                result.append(
-                    self._metadata(
-                        payload,
-                        created_at=created_at,
-                        updated_at=updated_at,
-                    )
-                )
+                # Opening a directory must not deserialize every trajectory.
+                # Full state, RNG and history validation remains in load().
+                result.append(metadata)
         return result
 
     def delete(self, project_id: str) -> None:

@@ -78,7 +78,7 @@ export function Lattice2DRenderer({
     context.fillRect(0, 0, canvas.width, canvas.height);
     context.fillStyle = "#64748b";
     context.lineWidth = 1;
-    if (showPositions) {
+    if (showPositions && frame.field_dimensions[0] * frame.field_dimensions[1] <= 100000) {
       for (let x = 0; x < frame.field_dimensions[0]; x += 1) {
         for (let y = 0; y < frame.field_dimensions[1]; y += 1) {
           context.beginPath();

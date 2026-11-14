@@ -1,7 +1,15 @@
 from __future__ import annotations
 
 from copy import deepcopy
-from dataclasses import dataclass
+from dataclasses import dataclass, fields
+from backend.atomic_model.payload_copy import copy_payload
+
+
+def _copy_random(state):
+    # random.Random.getstate() is an immutable tuple of immutable values.
+    if isinstance(state, tuple) and len(state) == 3 and isinstance(state[1], tuple):
+        return state
+    return deepcopy(state)
 
 
 @dataclass(frozen=True)
@@ -61,12 +69,12 @@ class SimulationHistory:
         self.limit = limit
         self.checkpoint_interval = checkpoint_interval
         self.history_truncated = False
-        initial_copy = deepcopy(initial_state)
+        initial_copy = self._clone_state(initial_state, deep_journal=True)
         self._initial = HistoryCheckpoint(
-            initial_copy, deepcopy(random_state), source_revision
+            initial_copy, _copy_random(random_state), source_revision
         )
         self._current_state = self._clone_state(initial_copy, deep_journal=False)
-        self._current_random_state = deepcopy(random_state)
+        self._current_random_state = _copy_random(random_state)
         self._event_log = deepcopy(getattr(initial_copy, "events", []))
         self._metric_log = deepcopy(getattr(initial_copy, "metrics_points", []))
         self._entries: list[HistoryDelta] = []
@@ -116,6 +124,7 @@ class SimulationHistory:
         source_revision: int = 0,
         *,
         force_checkpoint: bool = False,
+        capture: bool = True,
     ) -> HistoryCheckpoint:
         if self.can_redo:
             del self._entries[self._cursor :]
@@ -143,6 +152,8 @@ class SimulationHistory:
             self._cursor -= 1
             self.history_truncated = True
 
+        if not capture:
+            return None
         return self._checkpoint(
             self._current_state,
             self._current_random_state,
@@ -179,7 +190,7 @@ class SimulationHistory:
             self._current_state = self._clone_state(
                 checkpoint.state, deep_journal=False
             )
-            self._current_random_state = deepcopy(checkpoint.random_state)
+            self._current_random_state = _copy_random(checkpoint.random_state)
             return
         previous = self._state_at(self._cursor - 1)
         replacement = self._make_delta(
@@ -196,7 +207,7 @@ class SimulationHistory:
         self._current_state = self._clone_state(
             checkpoint.state, deep_journal=False
         )
-        self._current_random_state = deepcopy(checkpoint.random_state)
+        self._current_random_state = _copy_random(checkpoint.random_state)
 
     def export(self) -> dict:
         return {
@@ -215,6 +226,79 @@ class SimulationHistory:
                 )
             ],
         }
+
+    def export_compact(self) -> dict:
+        """Serialize the journal once and retain physical checkpoints and deltas."""
+        entries = []
+        for entry in self._entries:
+            row = {field.name: getattr(entry, field.name) for field in fields(HistoryDelta)}
+            row["atom_changes"] = [change.__dict__ for change in entry.atom_changes]
+            for name in ("state_before", "state_after", "checkpoint_after"):
+                if row[name] is not None:
+                    row[name] = self._physical_copy(row[name]).to_dict()
+            entries.append(row)
+        return {
+            "format": "deltas_v1", "cursor": self._cursor, "limit": self.limit,
+            "checkpoint_interval": self.checkpoint_interval,
+            "history_truncated": self.history_truncated,
+            "initial": {"state": self._initial.state.to_dict(),
+                        "random_state": self._initial.random_state,
+                        "source_revision": self._initial.source_revision},
+            "entries": entries, "events": self._event_log, "metrics": self._metric_log,
+        }
+
+    @classmethod
+    def restore_compact(cls, payload):
+        from backend.atomic_model.state import SimulationState
+        from backend.atomic_model.events import RandomSource
+
+        def tuple_tree(value):
+            return tuple(tuple_tree(item) for item in value) if isinstance(value, (tuple, list)) else value
+
+        def random_state(value):
+            value = tuple_tree(value)
+            RandomSource(0).set_state(value)
+            return value
+
+        entries, cursor, limit = payload["entries"], payload["cursor"], payload["limit"]
+        if (payload.get("format") != "deltas_v1" or not isinstance(entries, list)
+                or not isinstance(limit, int) or limit < 1 or len(entries) > limit
+                or not isinstance(cursor, int) or not 0 <= cursor <= len(entries)
+                or not isinstance(payload["events"], list) or not isinstance(payload["metrics"], list)):
+            raise ValueError("Invalid compact history")
+        initial = payload["initial"]
+        target = cls(SimulationState.from_dict(initial["state"]), random_state(initial["random_state"]),
+                     limit=limit, source_revision=initial["source_revision"],
+                     checkpoint_interval=payload.get("checkpoint_interval", cls.DEFAULT_CHECKPOINT_INTERVAL))
+        target._event_log = deepcopy(payload["events"])
+        target._metric_log = deepcopy(payload["metrics"])
+        for item in entries:
+            row = dict(item)
+            row["atom_changes"] = tuple(AtomChange(**change) for change in row["atom_changes"])
+            for name in ("state_before", "state_after", "checkpoint_after"):
+                if row[name] is not None:
+                    row[name] = SimulationState.from_dict(row[name])
+            for name in ("random_state_before", "random_state_after"):
+                row[name] = random_state(row[name])
+            delta = HistoryDelta(**row)
+            for prefix, log in (("event", target._event_log), ("metric", target._metric_log)):
+                for suffix in ("before", "after"):
+                    count = getattr(delta, f"{prefix}_count_{suffix}")
+                    replacement = getattr(delta, f"{prefix}_replacement_{suffix}")
+                    if not isinstance(count, int) or count < 0 or (replacement is None and count > len(log)):
+                        raise ValueError("History journal count is invalid")
+            target._entries.append(delta)
+        # Audit every retained transition, including the redo branch.
+        for delta in target._entries:
+            target._apply(delta, forward=True)
+            state = target._current_state
+            from backend.atomic_model.topology import Topology
+            state.validate(Topology.create(tuple(state.configuration["dimensions"]), contour=state.configuration.get("contour")))
+        for delta in reversed(target._entries[cursor:]):
+            target._apply(delta, forward=False)
+        target._cursor = cursor
+        target.history_truncated = bool(payload.get("history_truncated", False))
+        return target
 
     @classmethod
     def restore(cls, payload: dict):
@@ -268,8 +352,8 @@ class SimulationHistory:
                 act_number_after=0,
                 revision_before=0,
                 revision_after=0,
-                random_state_before=deepcopy(random_before),
-                random_state_after=deepcopy(random_after),
+                random_state_before=_copy_random(random_before),
+                random_state_after=_copy_random(random_after),
                 source_revision=source_revision,
                 event_count_before=0,
                 event_count_after=0,
@@ -296,8 +380,8 @@ class SimulationHistory:
             act_number_after=after.act_number,
             revision_before=before.revision,
             revision_after=after.revision,
-            random_state_before=deepcopy(random_before),
-            random_state_after=deepcopy(random_after),
+            random_state_before=_copy_random(random_before),
+            random_state_after=_copy_random(random_after),
             source_revision=source_revision,
             event_count_before=len(before.events),
             event_count_after=len(after.events),
@@ -328,6 +412,10 @@ class SimulationHistory:
     def _atom_changes(before, after) -> tuple[AtomChange, ...]:
         appended = after.events[-1] if len(after.events) == len(before.events) + 1 else None
         if isinstance(appended, dict):
+            if "affected_atom_ids" in appended:
+                return tuple(AtomChange(atom_id, before.atoms.get(atom_id), after.atoms.get(atom_id))
+                             for atom_id in appended["affected_atom_ids"]
+                             if before.atoms.get(atom_id) != after.atoms.get(atom_id))
             atom_id = appended.get("source_atom_id")
             if isinstance(atom_id, int) and before.atoms.get(atom_id) != after.atoms.get(atom_id):
                 return (
@@ -339,7 +427,7 @@ class SimulationHistory:
                 )
         return tuple(
             AtomChange(atom_id, before.atoms.get(atom_id), after.atoms.get(atom_id))
-            for atom_id in before.atoms.keys() | after.atoms.keys()
+            for atom_id in (after.atoms.difference_keys(before.atoms) if hasattr(after.atoms, "difference_keys") else before.atoms.keys() | after.atoms.keys())
             if before.atoms.get(atom_id) != after.atoms.get(atom_id)
         )
 
@@ -356,13 +444,13 @@ class SimulationHistory:
             return
         if delta.event_replacement_after is None:
             del self._event_log[delta.event_count_before :]
-            self._event_log.extend(deepcopy(state.events[delta.event_count_before :]))
+            self._event_log.extend(copy_payload(state.events[delta.event_count_before :]))
         else:
             self._event_log[:] = deepcopy(delta.event_replacement_after)
         if delta.metric_replacement_after is None:
             del self._metric_log[delta.metric_count_before :]
             self._metric_log.extend(
-                deepcopy(state.metrics_points[delta.metric_count_before :])
+                copy_payload(state.metrics_points[delta.metric_count_before :])
             )
         else:
             self._metric_log[:] = deepcopy(delta.metric_replacement_after)
@@ -380,10 +468,11 @@ class SimulationHistory:
 
         if self._is_simulation_state(self._current_state, self._current_state):
             for change in delta.atom_changes:
-                destination = change.destination_site if forward else change.source_site
                 current = self._current_state.atoms.get(change.atom_id)
                 if current is not None:
                     self._current_state.occupied.pop(current, None)
+            for change in delta.atom_changes:
+                destination = change.destination_site if forward else change.source_site
                 if destination is None:
                     self._current_state.atoms.pop(change.atom_id, None)
                 else:
@@ -399,7 +488,7 @@ class SimulationHistory:
             self._restore_journal(delta, forward=forward, events=False)
         elif full_state is not None:
             self._current_state = deepcopy(full_state)
-        self._current_random_state = deepcopy(
+        self._current_random_state = _copy_random(
             delta.random_state_after if forward else delta.random_state_before
         )
 
@@ -423,7 +512,7 @@ class SimulationHistory:
         if replacement is not None:
             target[:] = deepcopy(replacement)
         elif count == len(target) + 1:
-            target.append(deepcopy(log[count - 1]))
+            target.append(copy_payload(log[count - 1]))
         elif count == len(target) - 1:
             target.pop()
         else:
@@ -436,7 +525,7 @@ class SimulationHistory:
         saved_random = self._current_random_state
         start_index = 0
         state = self._clone_state(self._initial.state, deep_journal=True)
-        random_state = deepcopy(self._initial.random_state)
+        random_state = _copy_random(self._initial.random_state)
         source_revision = self._initial.source_revision
         for candidate_index in range(index, 0, -1):
             entry = self._entries[candidate_index - 1]
@@ -451,7 +540,7 @@ class SimulationHistory:
                 )
             else:
                 state = deepcopy(checkpoint)
-            random_state = deepcopy(entry.random_state_after)
+            random_state = _copy_random(entry.random_state_after)
             source_revision = entry.source_revision
             start_index = candidate_index
             break
@@ -485,8 +574,8 @@ class SimulationHistory:
             act_number_after=second.act_number_after,
             revision_before=getattr(self._initial.state, "revision", 0),
             revision_after=second.revision_after,
-            random_state_before=deepcopy(self._initial.random_state),
-            random_state_after=deepcopy(second.random_state_after),
+            random_state_before=_copy_random(self._initial.random_state),
+            random_state_after=_copy_random(second.random_state_after),
             source_revision=second.source_revision,
             event_count_before=len(getattr(self._initial.state, "events", [])),
             event_count_after=second.event_count_after,
@@ -506,10 +595,11 @@ class SimulationHistory:
         if not self._is_simulation_state(state, state):
             return deepcopy(full_state)
         for change in delta.atom_changes:
-            destination = change.destination_site if forward else change.source_site
             current = state.atoms.get(change.atom_id)
             if current is not None:
                 state.occupied.pop(current, None)
+        for change in delta.atom_changes:
+            destination = change.destination_site if forward else change.source_site
             if destination is None:
                 state.atoms.pop(change.atom_id, None)
             else:
@@ -556,6 +646,6 @@ class SimulationHistory:
     ) -> HistoryCheckpoint:
         return HistoryCheckpoint(
             cls._clone_state(state, deep_journal=deep_journal),
-            deepcopy(random_state),
+            _copy_random(random_state),
             source_revision,
         )

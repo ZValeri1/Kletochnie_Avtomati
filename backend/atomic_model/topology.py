@@ -209,6 +209,22 @@ class Topology:
         field_size = 3 * max(dimensions)
         field = MovementField((field_size,) * len(dimensions))
         offset = tuple((field_size - size) // 2 for size in dimensions)
+        rectangle = ((0, 0), (dimensions[0] - 1, 0),
+                     (dimensions[0] - 1, dimensions[1] - 1),
+                     (0, dimensions[1] - 1), (0, 0))
+        if len(dimensions) == 3 or contour == rectangle:
+            from backend.atomic_model.regular_grid import MetalKeys, RegularGraph, RegularSites
+            result = object.__new__(cls)
+            result.metal_domain = MetalDomain(dimensions, offset,
+                MetalKeys(dimensions, offset), MetalKeys(dimensions, offset, boundary=True), contour)
+            result.movement_field = field
+            result.dimensions = dimensions
+            result.sites = RegularSites(dimensions, offset, field.dimensions)
+            result.contact_graph = RegularGraph(result.sites)
+            result.movement_graph = RegularGraph(result.sites, movement=True)
+            result.shortest_path_graph = result.movement_graph
+            result._frozen = True
+            return result
         metal_points = {
             tuple(offset[axis] + value for axis, value in enumerate(point))
             for point in product(*(range(size) for size in dimensions))
@@ -438,6 +454,37 @@ class Topology:
             if key not in self.metal_domain.lattice_keys
         ):
             raise TopologyError("DISCONNECTED_ATOM")
+
+    def validate_changed_occupancy(self, occupied, changed_sites):
+        """Exact connectivity check after relocations of an already valid state.
+
+        Only components touching removed/added sites can have lost a metal root.
+        Search those components until a root is found; never assume a fixed radius.
+        """
+        affected = set(changed_sites)
+        for key in changed_sites:
+            affected.update(self.contact_neighbors(key))
+        connected = set()
+        for start in affected:
+            if start not in occupied or start in self.metal_domain.lattice_keys or start in connected:
+                continue
+            reached = {start}
+            queue = deque((start,))
+            anchored = False
+            while queue and not anchored:
+                current = queue.popleft()
+                for neighbor in self.contact_neighbors(current):
+                    if neighbor not in occupied:
+                        continue
+                    if neighbor in self.metal_domain.lattice_keys or neighbor in connected:
+                        anchored = True
+                        break
+                    if neighbor not in reached:
+                        reached.add(neighbor)
+                        queue.append(neighbor)
+            if not anchored:
+                raise TopologyError("DISCONNECTED_ATOM")
+            connected.update(reached)
 
     def near_field_boundary(self, site_key: str, warning_distance: float) -> bool:
         return self.movement_field.distance_to_boundary(

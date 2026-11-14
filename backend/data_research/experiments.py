@@ -180,11 +180,15 @@ class ExperimentService:
             summary = await self.manager.create(config)
             simulation_id = summary.simulation_id
             revision = summary.revision
-            for _ in range(steps):
+            remaining = steps
+            while remaining:
                 if record.cancel_requested:
                     return
-                revision = await self.manager.step_for_research(simulation_id, revision)
-                record.completed_steps += 1
+                next_revision = await self.manager.advance_batch(simulation_id, revision, remaining)
+                completed = next_revision - revision
+                revision = next_revision
+                record.completed_steps += completed
+                remaining -= completed
             metrics = await self.manager.metrics_series(simulation_id)
             snapshot = await self.manager.get_snapshot(simulation_id)
             record.successful_runs.append(

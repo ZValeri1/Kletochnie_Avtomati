@@ -4,6 +4,7 @@ import type {
   SimulationMetrics,
 } from "../contracts";
 import { useEffect, useRef, useState } from "react";
+import { samplePlot } from "./samplePlot";
 
 const metricLabels: Record<string, string> = {
   n_correct: "Атомы в узлах",
@@ -16,11 +17,11 @@ const metricLabels: Record<string, string> = {
 
 export function metricPlotPoints(points: MetricsPoint[], key: "d" | "s") {
   if (!points.length) return [];
-  const minAct = Math.min(...points.map((point) => point.act_number));
-  const maxAct = Math.max(...points.map((point) => point.act_number));
-  const maxValue = Math.max(1, ...points.map((point) => point[key]));
+  const minAct = points.reduce((n, point) => Math.min(n, point.act_number), Infinity);
+  const maxAct = points.reduce((n, point) => Math.max(n, point.act_number), 0);
+  const maxValue = points.reduce((n, point) => Math.max(n, point[key]), 1);
   const actSpan = Math.max(1, maxAct - minAct);
-  return points.map((point) => ({
+  return samplePlot(points, (point) => point[key]).map((point) => ({
     revision: point.revision,
     x: ((point.act_number - minAct) * 100) / actSpan,
     y: 38 - (point[key] * 34) / maxValue,
@@ -136,9 +137,10 @@ export function MetricsPanel({
     const margin = { top: 8, right: 10, bottom: 30, left: 52 };
     const plotWidth = width - margin.left - margin.right;
     const plotHeight = height - margin.top - margin.bottom;
-    const maxAct = Math.max(1, ...series.points.map((point) => point.act_number));
-    const maxValue = Math.max(key === "s" ? 0.1 : 1, ...series.points.map((point) => point[key]));
-    const points = series.points.map((point) => ({
+    const maxAct = series.points.reduce((n, point) => Math.max(n, point.act_number), 1);
+    const maxValue = series.points.reduce((n, point) => Math.max(n, point[key]), key === "s" ? 0.1 : 1);
+    const plotted = samplePlot(series.points, (point) => point[key]);
+    const points = plotted.map((point) => ({
       revision: point.revision,
       x: margin.left + (point.act_number / maxAct) * plotWidth,
       y: margin.top + plotHeight - (point[key] / maxValue) * plotHeight,
@@ -154,6 +156,7 @@ export function MetricsPanel({
         <figcaption>
           <strong>{title}</strong>
           <span>{description}</span>
+          {plotted.length < series.points.length && <span>График прорежен с сохранением экстремумов. Все точки доступны в экспорте.</span>}
         </figcaption>
         <svg viewBox={`0 0 ${width} ${height}`} role="img" aria-label={`${title}: ${yAxisTitle} по номеру итерации`}>
           {yTicks.map((value) => {

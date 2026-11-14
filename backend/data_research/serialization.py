@@ -71,9 +71,20 @@ class ProjectSerializer:
         history = simulation["history"]
         if not isinstance(history, dict):
             raise ProjectDataError("Simulation history must be an object")
-        checkpoints = history.get("checkpoints")
+        if history.get("format") == "deltas_v1":
+            from backend.simulation_management.history import SimulationHistory
+            try:
+                SimulationHistory.restore_compact(history)
+            except Exception as error:
+                raise ProjectDataError("Invalid compact simulation history") from error
+            checkpoints = [{"state": history["initial"]["state"], "random_state": history["initial"]["random_state"]}]
+            cursor = 0
+        elif "format" in history:
+            raise ProjectDataError("Unknown history format")
+        else:
+            checkpoints = history.get("checkpoints")
+            cursor = history.get("cursor")
         limit = history.get("limit")
-        cursor = history.get("cursor")
         if (
             not isinstance(checkpoints, list)
             or not checkpoints
@@ -110,6 +121,13 @@ class ProjectSerializer:
     def _validate_state(state) -> None:
         if not isinstance(state, dict):
             raise ProjectDataError("Simulation state must be an object")
+        if state.get("storage") is not None:
+            from backend.atomic_model.state import SimulationState
+            try:
+                SimulationState.from_dict(state)
+            except Exception as error:
+                raise ProjectDataError("Invalid sparse simulation state") from error
+            return
         atoms = state.get("atoms")
         occupied = state.get("occupied")
         if not isinstance(atoms, dict) or not isinstance(occupied, dict):

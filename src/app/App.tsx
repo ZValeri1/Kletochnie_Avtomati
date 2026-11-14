@@ -651,6 +651,11 @@ export function App() {
             </div>
           )}
           <div className="simulation-stage">
+            {selected?.current_snapshot?.render_sampled && (
+              <p className="muted" data-testid="sampled-render-notice">
+                Обзор большой решётки: показана выборка атомов. Расчёт, метрики и журнал учитывают всю решётку.
+              </p>
+            )}
             {selected?.summary.status === "RUNNING" &&
               selected.summary.run_mode === "fast" && (
                 <div

@@ -11,6 +11,7 @@ from backend.atomic_model.errors import StateInvariantError
 from backend.atomic_model.events import EventRecord, RandomSource
 from backend.atomic_model.initialization import InitializationCounts
 from backend.atomic_model.state import SimulationState
+from backend.atomic_model.payload_copy import copy_payload
 from backend.atomic_model.topology import Topology
 from backend.contracts.errors import ApplicationError
 from backend.data_research.errors import ProjectDataError
@@ -61,6 +62,8 @@ class SimulationManager:
         self.event_hub = event_hub or EventHub()
         self.sessions: dict[str, SimulationSession] = {}
         self._simulation_number = 0
+        from backend.simulation_management.process_compute import ProcessCompute
+        self.process_compute = ProcessCompute(max_parallel_simulations)
 
     def _default_name(self):
         self._simulation_number += 1
@@ -210,6 +213,7 @@ class SimulationManager:
                     result.state,
                     session.random_source.get_state(),
                     source_revision=session.public_revision,
+                    capture=False,
                 )
                 if not publish_updates:
                     if publish_event_only:
@@ -259,6 +263,61 @@ class SimulationManager:
             async with session.lock:
                 self._mark_recoverable_error(session, "step", error)
                 await self._publish_error(session)
+            raise
+
+    def uses_process_compute(self, session):
+        return type(self.engine) is SimulationEngine and len(session.state.atoms) >= 10000
+
+    async def advance_batch(self, simulation_id, expected_revision, count=64, *, running=False):
+        """Commit a bounded batch while retaining every event, metric and undo delta."""
+        session = self._session(simulation_id)
+        if count < 1:
+            raise ValueError("Batch size must be positive")
+        if not self.uses_process_compute(session):
+            await self._execute_step(session, expected_revision, allow_running=running, publish_updates=False)
+            return session.revision
+
+        async def execute():
+            async with session.lock:
+                self._ensure_revision(session, expected_revision)
+                if not (running and session.status == SimulationStatus.RUNNING):
+                    self._ensure_command_allowed(session, "step")
+                session.state.validate(session.topology)
+                if not session.has_started:
+                    session.trajectory_initial = session.history.current()
+                rows, error = await self.process_compute.advance(session, count)
+                for event, point, changes, random_state in rows:
+                    state = session.state.transition_copy(include_history=False)
+                    state.relocate_many(changes)
+                    state.act_number = event["act_number"]
+                    state.revision = event["revision"]
+                    state.validate(session.topology)
+                    state.events = [event]
+                    state.metrics_points = [point]
+                    self._reattach_journals(session.state, state)
+                    session.state = state
+                    session.random_source.set_state(random_state)
+                    session.public_revision += 1
+                    state.events[-1] = self._session_event_payload(session, event)
+                    state.metrics_points[-1]["revision"] = session.revision
+                    session.history.commit(state, random_state, source_revision=session.revision, capture=False)
+                    session.has_started = True
+                if session.status == SimulationStatus.PREPARATION and rows:
+                    session.status = SimulationStatus.PAUSED
+                if error:
+                    raise RuntimeError(f"{error[0]}: {error[1]}")
+                session.error = None
+                session.pending_retry = None
+                return session.revision
+
+        try:
+            return await self.scheduler.submit(simulation_id, execute, enforce_timeout=False)
+        except (RevisionConflictError, InvalidSimulationCommandError):
+            raise
+        except Exception as error:
+            self.process_compute.revisions.pop(simulation_id, None)
+            self._mark_recoverable_error(session, "step", error)
+            await self._publish_error(session)
             raise
 
     async def move(
@@ -629,6 +688,7 @@ class SimulationManager:
         was_recovering = session.status == SimulationStatus.PAUSED_WITH_ERROR
         if was_running:
             await self._pause_for_history(session)
+        paused_revision = session.revision
         clear_error_after_navigation = (
             was_recovering
             or session.status == SimulationStatus.PAUSED_WITH_ERROR
@@ -641,7 +701,7 @@ class SimulationManager:
                     self._ensure_revision(session, expected_revision)
                 elif (
                     expected_revision is not None
-                    and session.revision not in {expected_revision, expected_revision + 1}
+                    and session.revision != paused_revision
                 ):
                     raise RevisionConflictError("Revision changed during safe pause")
                 checkpoint = session.history.undo()
@@ -680,6 +740,7 @@ class SimulationManager:
         requested_redo = session.history.peek_redo() if was_running else None
         if was_running:
             await self._pause_for_history(session)
+        paused_revision = session.revision
         clear_error_after_navigation = (
             was_recovering
             or session.status == SimulationStatus.PAUSED_WITH_ERROR
@@ -692,7 +753,7 @@ class SimulationManager:
                     self._ensure_revision(session, expected_revision)
                 elif (
                     expected_revision is not None
-                    and session.revision not in {expected_revision, expected_revision + 1}
+                    and session.revision != paused_revision
                 ):
                     raise RevisionConflictError("Revision changed during safe pause")
                 if was_running and not session.history.can_redo:
@@ -940,6 +1001,7 @@ class SimulationManager:
             if session.run_task is not None and not session.run_task.done():
                 session.run_task.cancel()
                 await asyncio.gather(session.run_task, return_exceptions=True)
+        await self.process_compute.remove(simulation_id)
         self.sessions.pop(simulation_id, None)
 
     async def probabilities(self, simulation_id: str, atom_id: int, q_test: float):
@@ -1104,7 +1166,8 @@ class SimulationManager:
         for simulation_id in simulation_ids:
             session = self._session(simulation_id)
             async with session.lock:
-                history = session.history.export()
+                compact = session.state.transition_copy(include_history=False).to_dict().get("storage") == "sparse_regular_v1"
+                history = session.history.export_compact() if compact else session.history.export()
                 snapshot = SnapshotFactory.create(session)
                 simulations.append(
                     {
@@ -1116,7 +1179,7 @@ class SimulationManager:
                         "configuration": deepcopy(session.configuration),
                         "state": session.state.to_dict(),
                         "random_state": session.random_source.get_state(),
-                        "history": {
+                        "history": deepcopy(history) if compact else {
                             "cursor": history["cursor"],
                             "limit": history["limit"],
                             "history_truncated": history["history_truncated"],
@@ -1193,26 +1256,7 @@ class SimulationManager:
                     item.get("has_started", saved_status != SimulationStatus.PREPARATION)
                 )
                 history_payload = item["history"]
-                decoded = {
-                    "cursor": history_payload["cursor"],
-                    "limit": history_payload.get(
-                        "limit", SimulationHistory.DEFAULT_ACTION_LIMIT
-                    ),
-                    "history_truncated": history_payload.get(
-                        "history_truncated", False
-                    ),
-                    "checkpoints": [
-                        {
-                            "state": self._decode_state(checkpoint["state"]),
-                            "random_state": self._tuple_tree(checkpoint["random_state"]),
-                            "source_revision": checkpoint.get("source_revision", 0),
-                        }
-                        for checkpoint in history_payload["checkpoints"]
-                    ],
-                }
-                session.history = SimulationHistory.restore(decoded)
-                for checkpoint in session.history.export()["checkpoints"]:
-                    checkpoint["state"].validate(topology)
+                session.history = self._restore_history(history_payload, topology)
                 session.trajectory_initial = session.history.initial()
                 session.source_project_id = payload["project_id"]
                 session.source_simulation_id = source_simulation_id
@@ -1227,6 +1271,31 @@ class SimulationManager:
         self.sessions.update({item.simulation_id: item for item in candidates})
         return [SnapshotFactory.create_summary(item) for item in candidates]
 
+    def _restore_history(self, history_payload, topology):
+        if history_payload.get("format") == "deltas_v1":
+            return SimulationHistory.restore_compact(history_payload)
+        decoded = {
+            "cursor": history_payload["cursor"],
+            "limit": history_payload.get(
+                "limit", SimulationHistory.DEFAULT_ACTION_LIMIT
+            ),
+            "history_truncated": history_payload.get(
+                "history_truncated", False
+            ),
+            "checkpoints": [
+                {
+                    "state": self._decode_state(checkpoint["state"]),
+                    "random_state": self._tuple_tree(checkpoint["random_state"]),
+                    "source_revision": checkpoint.get("source_revision", 0),
+                }
+                for checkpoint in history_payload["checkpoints"]
+            ],
+        }
+        history = SimulationHistory.restore(decoded)
+        for checkpoint in history.export()["checkpoints"]:
+            checkpoint["state"].validate(topology)
+        return history
+
     async def close(self) -> None:
         running = []
         for session in self.sessions.values():
@@ -1237,6 +1306,7 @@ class SimulationManager:
         if running:
             await asyncio.gather(*running, return_exceptions=True)
         await self.scheduler.close()
+        await self.process_compute.close()
 
     async def _run_loop(self, session: SimulationSession) -> None:
         next_graph_update = 0.0
@@ -1248,6 +1318,14 @@ class SimulationManager:
                 visual_mode = session.run_mode == "visual"
                 now = asyncio.get_running_loop().time()
                 publish_graph_point = not visual_mode and now >= next_graph_update
+                if not visual_mode and self.uses_process_compute(session):
+                    await self.advance_batch(session.simulation_id, session.revision, running=True)
+                    if publish_graph_point:
+                        await self.event_hub.publish(session.simulation_id, {
+                            "type": "event", "event": self._event(session, session.state.events[-1]).model_dump(mode="json")})
+                        next_graph_update = asyncio.get_running_loop().time() + 0.1
+                    await asyncio.sleep(0)
+                    continue
                 await self._execute_step(
                     session,
                     session.revision,
@@ -1348,15 +1426,7 @@ class SimulationManager:
 
     @staticmethod
     def _decode_state(payload: dict) -> SimulationState:
-        return SimulationState(
-            atoms={int(key): value for key, value in payload["atoms"].items()},
-            occupied={key: int(value) for key, value in payload["occupied"].items()},
-            act_number=payload.get("act_number", 0),
-            revision=payload.get("revision", 0),
-            events=deepcopy(payload.get("events", [])),
-            metrics_points=deepcopy(payload.get("metrics_points", [])),
-            configuration=deepcopy(payload.get("configuration", {})),
-        )
+        return SimulationState.from_dict(payload)
 
     @staticmethod
     def _tuple_tree(value):
@@ -1419,7 +1489,7 @@ class SimulationManager:
 
     @staticmethod
     def _session_event_payload(session: SimulationSession, event) -> dict:
-        payload = event.to_dict() if hasattr(event, "to_dict") else deepcopy(event)
+        payload = event.to_dict() if hasattr(event, "to_dict") else copy_payload(event)
         payload["simulation_id"] = session.simulation_id
         payload["event_id"] = f"{session.simulation_id}:{payload['event_id']}"
         payload["revision"] = session.revision

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from fastapi import APIRouter, Query
 
 from backend.api.models import ProjectSaveRequest
@@ -21,13 +22,13 @@ def create_projects_router(manager, store) -> APIRouter:
                 updated_at=item.updated_at,
                 history_truncated=item.history_truncated,
             ).model_dump(mode="json")
-            for item in store.list()
+            for item in await asyncio.to_thread(store.list)
         ]
 
     @router.post("/{project_id}/save", response_model=ProjectStatus)
     async def save_project(project_id: str, request: ProjectSaveRequest):
         payload = await manager.export_project(project_id, request.simulation_ids)
-        metadata = store.save(payload, overwrite=request.overwrite)
+        metadata = await asyncio.to_thread(store.save, payload, overwrite=request.overwrite)
         return ProjectStatus(
             project_id=project_id,
             status="SAVED",
@@ -39,7 +40,7 @@ def create_projects_router(manager, store) -> APIRouter:
 
     @router.post("/{project_id}/load", response_model=ProjectLoadResponse)
     async def load_project(project_id: str):
-        payload = store.load(project_id)
+        payload = await asyncio.to_thread(store.load, project_id)
         simulations = await manager.import_project(payload)
         return {
             "schema_version": 1,
@@ -54,11 +55,11 @@ def create_projects_router(manager, store) -> APIRouter:
         if not confirm:
             raise ProjectConfirmationError("Project deletion requires confirm=true")
         metadata = next(
-            (item for item in store.list() if item.project_id == project_id), None
+            (item for item in await asyncio.to_thread(store.list) if item.project_id == project_id), None
         )
         if metadata is None:
-            store.load(project_id)
-        store.delete(project_id)
+            await asyncio.to_thread(store.load, project_id)
+        await asyncio.to_thread(store.delete, project_id)
         return ProjectStatus(
             project_id=project_id,
             status="DELETED",

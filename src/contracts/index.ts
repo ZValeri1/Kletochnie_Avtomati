@@ -25,6 +25,8 @@ export type SimulationStatus =
   | "FAILED";
 
 export type SimulationSnapshot = {
+  render_sampled?: boolean;
+  rendered_atom_count?: number;
   schema_version: 1;
   simulation_id: string;
   revision: number;
