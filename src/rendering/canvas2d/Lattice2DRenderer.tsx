@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import type { PointerEvent as ReactPointerEvent } from "react";
 
 import type { RenderFrame } from "../common/snapshotMapper";
+import { physicalPosition2D } from "../common/physicalDomain";
 
 const colourFor = (atom: RenderFrame["atoms"][number]) => {
   if (atom.metal_relation === "outside") return "#ef4444";
@@ -81,6 +82,7 @@ export function Lattice2DRenderer({
     if (showPositions && frame.field_dimensions[0] * frame.field_dimensions[1] <= 100000) {
       for (let x = 0; x < frame.field_dimensions[0]; x += 1) {
         for (let y = 0; y < frame.field_dimensions[1]; y += 1) {
+          if (!physicalPosition2D(frame, x, y, false)) continue;
           context.beginPath();
           context.arc(ox + x * scale, oy + y * scale, 1.5, 0, Math.PI * 2);
           context.fill();
@@ -89,6 +91,7 @@ export function Lattice2DRenderer({
       context.fillStyle = "#475569";
       for (let x = 0; x < frame.field_dimensions[0] - 1; x += 1) {
         for (let y = 0; y < frame.field_dimensions[1] - 1; y += 1) {
+          if (!physicalPosition2D(frame, x + 0.5, y + 0.5, true)) continue;
           context.beginPath();
           context.arc(ox + (x + 0.5) * scale, oy + (y + 0.5) * scale, 1.2, 0, Math.PI * 2);
           context.fill();

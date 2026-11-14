@@ -109,7 +109,7 @@ export function DiagnosticsPanel({
                       {outcome.destination_site} (
                       {outcome.destination_coordinate.join(", ")})
                     </td>
-                    <td>{outcome.operation ?? "—"}</td>
+                    <td>{outcome.operation === "escape" ? "Выход из системы" : outcome.operation ?? "—"}</td>
                     <td>{outcome.shell}</td>
                     <td>{outcome.operation_weight}</td>
                     <td>{outcome.shell_weight}</td>

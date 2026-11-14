@@ -14,8 +14,10 @@ METRICS = {
     "n_v": "Вакансии",
     "n_i": "Межузельные атомы",
     "n_as": "Атомы за контуром",
+    "n_lost": "Улетевшие атомы",
     "d": "Количество дефектов",
-    "s": "Энтропия",
+    "s": "Новая энтропия",
+    "s_legacy": "Старая энтропия",
 }
 PARAMETERS = {
     "name": "Название", "simulation_count": "Экспериментов в сессии",
@@ -27,6 +29,7 @@ PARAMETERS = {
     "n_as": "Начальные атомы за контуром", "random_parameters": "Случайная инициализация",
     "seed_init": "Seed инициализации", "seed_sim": "Seed симуляции",
     "q_max_ev": "Максимальная энергия, эВ", "q_thr_ev": "Пороговая энергия, эВ",
+    "escape_weight": "Вес выхода атома из системы",
     "weights": "Вероятности переходов",
     "external_direction_probabilities": "Направления внешних атомов",
     "repetitions": "Повторы", "steps": "Акты на запуск", "master_seed": "Master seed",
@@ -51,7 +54,7 @@ def _chart(points, key, title):
     width, height = 760, 300
     left, top, plot_width, plot_height = 90, 30, 640, 215
     max_act = max(1, max((p["act_number"] for p in points), default=0))
-    max_value = max(0.1 if key == "s" else 1, max((p[key] for p in points), default=0))
+    max_value = max((p[key] for p in points), default=0) or 1
     def x(value):
         return left + value / max_act * plot_width
     def y(value):
@@ -66,7 +69,7 @@ def _chart(points, key, title):
     for act in sorted({0, max_act // 2, max_act}):
         parts.append(f'<text x="{x(act):.3f}" y="265" text-anchor="middle">{act}</text>')
     parts.append('<path d="M90 30V245H730" fill="none" stroke="#64748b"/><text x="410" y="290" text-anchor="middle">Номер акта</text>')
-    unit = "Энтропия S" if key == "s" else "Количество, шт."
+    unit = "Энтропия S, Дж/К" if key == "s" else "Количество, шт."
     parts.append(f'<text transform="translate(18 138) rotate(-90)" text-anchor="middle">{unit}</text>')
     coordinates = " ".join(f'{x(p["act_number"]):.3f},{y(p[key]):.3f}' for p in points)
     parts.append(f'<polyline points="{coordinates}" fill="none" stroke="#2563eb" stroke-width="2"/>')
@@ -106,7 +109,12 @@ def build_report(*, title, metadata, runs, failures=(), aggregate=None, configur
             archive.writestr(f"{folder}/metadata.json", _json({"name": name, "simulation_id": run.get("simulation_id")}))
             body.extend(["<h3>Начальные параметры</h3>", _table(run["configuration"])])
             body.append('<p>Параметры инициализации заданы до расчёта; ручные правки отмечены оранжевым. '
-                        'D = N_V + N_I + N_As; S = −Σ pᵢ ln(pᵢ), безразмерная величина.</p>')
+                        'D = N_V + N_I + N_As; S = −k[N(c ln c + (1−c) ln(1−c)) + N′(c′ ln c′ + (1−c′) ln(1−c′))], Дж/К. '
+                        'k = 1.380649×10⁻²³ Дж/К; N — узлы металла; N′ — межузлия внутри и первого наружного слоя; '
+                        'c = N_V/N; c′ = (N_I+N_As)/N′. При c = 0 или 1 вклад равен нулю. '
+                        'Старая энтропия: S_old = −Σ n_j ln(n_j/Σn_j), где j — атомы в узлах, вакансии, '
+                        'внутренние межузлия и внешние атомы; N_outside = N_As + N_lost, то есть атомы наружного слоя '
+                        'и улетевшие считаются одной категорией; величина безразмерная.</p>')
             if points:
                 initial = next((p for p in reversed(points) if p["act_number"] == 0), points[0])
                 body.append("<h3>Начальные и итоговые метрики</h3><table><tr><th>Метрика</th><th>Начало</th><th>Итог</th></tr>")

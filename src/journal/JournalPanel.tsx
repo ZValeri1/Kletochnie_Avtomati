@@ -141,7 +141,7 @@ export function JournalPanel({
                 </td>
                 <td>
                   <details>
-                    <summary>{event.operation}</summary>
+                    <summary>{event.operation === "escape" ? "Выход из системы" : event.operation}</summary>
                     <dl className="event-details">
                       <div>
                         <dt>Источник</dt>
@@ -172,8 +172,8 @@ export function JournalPanel({
                         <dt>Метрики</dt>
                         <dd>
                           D {event.metrics_before.d} → {event.metrics_after.d};
-                          S {event.metrics_before.s.toFixed(4)} →{" "}
-                          {event.metrics_after.s.toFixed(4)}
+                          S {event.metrics_before.s.toExponential(4)} →{" "}
+                          {event.metrics_after.s.toExponential(4)}
                         </dd>
                       </div>
                       <div>

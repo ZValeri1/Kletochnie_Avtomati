@@ -3,8 +3,10 @@ export type SimulationMetrics = {
   n_v: number;
   n_i: number;
   n_as: number;
+  n_lost: number;
   d: number;
   s: number;
+  s_legacy: number;
 };
 
 export type AtomSnapshot = {
@@ -52,6 +54,7 @@ export type SimulationSnapshot = {
     seed_sim: number;
     q_max_ev: number;
     q_thr_ev: number;
+    escape_weight: number;
     weights: Record<string, number>;
     external_direction_probabilities: {
       toward_metal: number;
@@ -93,6 +96,7 @@ export type SimulationEvent = {
   destination_coordinate: number[] | null;
   operation:
     | "no_change"
+    | "escape"
     | "manual_edit"
     | "lattice_vacancy"
     | "lattice_interstitial"
@@ -147,6 +151,7 @@ export type ProbabilityOutcome = {
     | "external_interstitial"
     | "interstitial_external"
     | "external_metal"
+    | "escape"
     | null;
   shell: 1 | 2;
   operation_weight: number;
@@ -371,6 +376,30 @@ const version = (payload: Record<string, unknown>) => {
 const finiteNumber = (value: unknown) =>
   typeof value === "number" && Number.isFinite(value);
 
+const restoreLegacyMetrics = (metrics: Record<string, unknown>) => {
+  if (metrics.n_lost === undefined) metrics.n_lost = 0;
+  if (metrics.s_legacy !== undefined) return;
+  const groups = [
+    Number(metrics.n_correct),
+    Number(metrics.n_v),
+    Number(metrics.n_i),
+    Number(metrics.n_as) + Number(metrics.n_lost),
+  ];
+  if (!groups.every((value) => Number.isInteger(value) && value >= 0)) {
+    return;
+  }
+  const total = groups.reduce((sum, value) => sum + value, 0);
+  metrics.s_legacy = total === 0
+    ? 0
+    : -groups.reduce(
+        (sum, value) =>
+          value === 0
+            ? sum
+            : sum + value * Math.log(value / total),
+        0,
+      );
+};
+
 const numericCoordinate = (value: unknown, dimension: number) =>
   Array.isArray(value) &&
   value.length === dimension &&
@@ -411,12 +440,18 @@ export function decodeSimulationSnapshot(value: unknown): SimulationSnapshot {
   }
   const dimension = payload.dimensions.length;
   const metrics = object(payload.metrics, "metrics");
-  for (const key of ["n_correct", "n_v", "n_i", "n_as", "d"]) {
+  restoreLegacyMetrics(metrics);
+  for (const key of ["n_correct", "n_v", "n_i", "n_as", "n_lost", "d"]) {
     if (!Number.isInteger(metrics[key]) || Number(metrics[key]) < 0) {
       throw new Error("Invalid snapshot metrics");
     }
   }
-  if (!finiteNumber(metrics.s) || Number(metrics.s) < 0) {
+  if (
+    !finiteNumber(metrics.s) ||
+    Number(metrics.s) < 0 ||
+    !finiteNumber(metrics.s_legacy) ||
+    Number(metrics.s_legacy) < 0
+  ) {
     throw new Error("Invalid snapshot metrics");
   }
   const history = object(payload.history_capabilities, "history_capabilities");
@@ -509,6 +544,8 @@ export function decodeSimulationSnapshot(value: unknown): SimulationSnapshot {
     Number(configuration.q_max_ev) < 0 ||
     !finiteNumber(configuration.q_thr_ev) ||
     Number(configuration.q_thr_ev) < 0 ||
+    !finiteNumber(configuration.escape_weight) ||
+    Number(configuration.escape_weight) < 0 ||
     configuration.random_parameters === undefined ||
     requiredWeights.some(
       (key) =>
@@ -610,6 +647,7 @@ export function decodeSimulationEvent(value: unknown): SimulationEvent {
       "external_interstitial",
       "interstitial_external",
       "external_metal",
+    "escape",
     ].includes(String(payload.operation)) ||
     typeof payload.result_reason !== "string" ||
     !Array.isArray(payload.affected_atom_ids) ||
@@ -662,12 +700,15 @@ export function decodeSimulationEvent(value: unknown): SimulationEvent {
   }
   for (const field of ["metrics_before", "metrics_after"]) {
     const metrics = object(payload[field], field);
+    restoreLegacyMetrics(metrics);
     if (
-      !["n_correct", "n_v", "n_i", "n_as", "d"].every(
+      !["n_correct", "n_v", "n_i", "n_as", "n_lost", "d"].every(
         (key) => Number.isInteger(metrics[key]) && Number(metrics[key]) >= 0,
       ) ||
       !finiteNumber(metrics.s) ||
-      Number(metrics.s) < 0
+      Number(metrics.s) < 0 ||
+      !finiteNumber(metrics.s_legacy) ||
+      Number(metrics.s_legacy) < 0
     ) {
       throw new Error("Invalid event metrics");
     }
@@ -731,6 +772,7 @@ export function decodeProbabilityOverlay(value: unknown): ProbabilityOverlay {
     "external_interstitial",
     "interstitial_external",
     "external_metal",
+    "escape",
   ];
   for (const item of payload.outcomes) {
     const outcome = object(item, "ProbabilityOutcome");
@@ -787,6 +829,7 @@ export function decodeMetricsSeries(value: unknown): MetricsSeries {
   }
   for (const item of payload.points) {
     const point = object(item, "MetricsPoint");
+    restoreLegacyMetrics(point);
     if (
       !Number.isInteger(point.revision) ||
       Number(point.revision) < 0 ||
@@ -795,11 +838,13 @@ export function decodeMetricsSeries(value: unknown): MetricsSeries {
       !["initialization", "physical_act", "manual_edit"].includes(
         String(point.origin),
       ) ||
-      !["n_correct", "n_v", "n_i", "n_as", "d"].every(
+      !["n_correct", "n_v", "n_i", "n_as", "n_lost", "d"].every(
         (key) => Number.isInteger(point[key]) && Number(point[key]) >= 0,
       ) ||
       !finiteNumber(point.s) ||
-      Number(point.s) < 0
+      Number(point.s) < 0 ||
+      !finiteNumber(point.s_legacy) ||
+      Number(point.s_legacy) < 0
     ) {
       throw new Error("Invalid MetricsPoint");
     }
@@ -1044,12 +1089,15 @@ export function decodePreparationEditPreview(value: unknown): PreparationEditPre
   }
   for (const field of ["metrics_before", "metrics_after"] as const) {
     const metrics = object(payload[field], field);
+    restoreLegacyMetrics(metrics);
     if (
-      !["n_correct", "n_v", "n_i", "n_as", "d"].every(
+      !["n_correct", "n_v", "n_i", "n_as", "n_lost", "d"].every(
         (key) => Number.isInteger(metrics[key]) && Number(metrics[key]) >= 0,
       ) ||
       !finiteNumber(metrics.s) ||
-      Number(metrics.s) < 0
+      Number(metrics.s) < 0 ||
+      !finiteNumber(metrics.s_legacy) ||
+      Number(metrics.s_legacy) < 0
     ) {
       throw new Error(`Invalid PreparationEditPreview ${field}`);
     }
@@ -1109,14 +1157,16 @@ export function decodeExperimentResults(value: unknown): ExperimentResults {
   };
   const decodeMetricPoint = (value: unknown): MetricsPoint => {
     const point = object(value, "Experiment MetricsPoint");
+    restoreLegacyMetrics(point);
     if (
       !Number.isInteger(point.revision) ||
       !Number.isInteger(point.act_number) ||
       !["initialization", "physical_act", "manual_edit"].includes(String(point.origin)) ||
-      !["n_correct", "n_v", "n_i", "n_as", "d"].every(
+      !["n_correct", "n_v", "n_i", "n_as", "n_lost", "d"].every(
         (key) => Number.isInteger(point[key]) && Number(point[key]) >= 0,
       ) ||
-      !finiteNumber(point.s) || Number(point.s) < 0
+      !finiteNumber(point.s) || Number(point.s) < 0 ||
+      !finiteNumber(point.s_legacy) || Number(point.s_legacy) < 0
     ) {
       throw new Error("Invalid Experiment MetricsPoint");
     }

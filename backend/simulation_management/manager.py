@@ -207,6 +207,10 @@ class SimulationManager:
                 status_changed = session.status == SimulationStatus.PREPARATION
                 if session.status == SimulationStatus.PREPARATION:
                     session.status = SimulationStatus.PAUSED
+                if not session.state.atoms:
+                    session.status = SimulationStatus.PAUSED
+                    session.pause_requested = True
+                    status_changed = True
                 session.error = None
                 session.pending_retry = None
                 session.history.commit(
@@ -266,7 +270,10 @@ class SimulationManager:
             raise
 
     def uses_process_compute(self, session):
-        return type(self.engine) is SimulationEngine and len(session.state.atoms) >= 10000
+        return (
+            type(self.engine) is SimulationEngine
+            and len(session.topology.metal_domain.lattice_keys) >= 10000
+        )
 
     async def advance_batch(self, simulation_id, expected_revision, count=64, *, running=False):
         """Commit a bounded batch while retaining every event, metric and undo delta."""
@@ -304,6 +311,9 @@ class SimulationManager:
                     session.has_started = True
                 if session.status == SimulationStatus.PREPARATION and rows:
                     session.status = SimulationStatus.PAUSED
+                if not session.state.atoms:
+                    session.status = SimulationStatus.PAUSED
+                    session.pause_requested = True
                 if error:
                     raise RuntimeError(f"{error[0]}: {error[1]}")
                 session.error = None
@@ -426,7 +436,7 @@ class SimulationManager:
             raise RevisionConflictError("Revision conflict")
         allowed = {
             "initialization_mode", "n_v", "n_i", "n_as", "random_parameters",
-            "seed_init", "q_max_ev", "q_thr_ev", "weights", "method",
+            "seed_init", "q_max_ev", "q_thr_ev", "escape_weight", "weights", "method",
             "external_direction_probabilities",
         }
         if not isinstance(initialization, dict) or set(initialization) - allowed:
@@ -1106,6 +1116,8 @@ class SimulationManager:
                 raise InvalidSimulationCommandError("Z_SLICES_REQUIRE_3D")
             layers: dict[float, list[SliceSite]] = {}
             for site in session.topology.sites.values():
+                if not session.topology.is_physical_site(site.key):
+                    continue
                 z_coordinate = site.coordinate[2]
                 layers.setdefault(z_coordinate, []).append(
                     SliceSite(
@@ -1212,6 +1224,8 @@ class SimulationManager:
         reserved_ids = set(self.sessions)
         try:
             for item in payload["simulations"]:
+                if item["configuration"].get("physics_version") != 2:
+                    raise ProjectDataError("Проект использует прежнюю энтропию и внешнюю область. Для него нужна версия приложения до изменения физики; создайте новую симуляцию для новой модели.")
                 source_simulation_id = item["simulation_id"]
                 simulation_id = source_simulation_id
                 while simulation_id in reserved_ids:
@@ -1320,6 +1334,10 @@ class SimulationManager:
                 publish_graph_point = not visual_mode and now >= next_graph_update
                 if not visual_mode and self.uses_process_compute(session):
                     await self.advance_batch(session.simulation_id, session.revision, running=True)
+                    if not session.state.atoms:
+                        await self._publish_snapshot(session)
+                        await self._publish_status(session)
+                        return
                     if publish_graph_point:
                         await self.event_hub.publish(session.simulation_id, {
                             "type": "event", "event": self._event(session, session.state.events[-1]).model_dump(mode="json")})
@@ -1334,6 +1352,10 @@ class SimulationManager:
                     publish_event_only=publish_graph_point,
                     enforce_timeout=visual_mode,
                 )
+                if not session.state.atoms:
+                    await self._publish_snapshot(session)
+                    await self._publish_status(session)
+                    return
                 if publish_graph_point:
                     next_graph_update = asyncio.get_running_loop().time() + 0.1
                 await asyncio.sleep(session.run_interval_seconds if visual_mode else 0)

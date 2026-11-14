@@ -203,7 +203,10 @@ class ComputeBackend:
         if not destinations:
             return []
         from backend.atomic_model.regular_grid import RegularSites
-        if isinstance(topology.sites, RegularSites) and len(state.atoms) >= 10000:
+        if (
+            isinstance(topology.sites, RegularSites)
+            and len(topology.metal_domain.lattice_keys) >= 10000
+        ):
             # The sparse CPU validator examines only affected components. Materializing
             # the full field/occupancy for each GPU call would defeat sparse execution.
             return None

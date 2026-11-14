@@ -361,6 +361,30 @@ class Topology:
         self._site(site_key)
         return self.contact_graph[site_key]
 
+    @lru_cache(maxsize=32768)
+    def is_physical_site(self, key: str) -> bool:
+        if key not in self.sites:
+            return False
+        site = self.sites[key]
+        if site.metal_relation != "outside":
+            return True
+        if site.kind != "interstitial":
+            return False
+        from backend.atomic_model.regular_grid import RegularSites
+        if isinstance(self.sites, RegularSites):
+            return all(2 * low - 1 <= value <= 2 * (low + size - 1) + 1
+                       for value, low, size in zip(site.half_units, self.metal_domain.offset, self.dimensions))
+        return any(neighbor in self.metal_domain.lattice_keys for neighbor in self.contact_neighbors(key))
+
+    @lru_cache(maxsize=128)
+    def interstitial_capacity(self) -> int:
+        from backend.atomic_model.regular_grid import RegularSites
+        from math import prod
+        if isinstance(self.sites, RegularSites):
+            return prod(size + 1 for size in self.dimensions)
+        return sum(site.kind == "interstitial" and self.is_physical_site(key)
+                   for key, site in self.sites.items())
+
     def axial_interstitial_neighbors(self, site_key: str) -> frozenset[str]:
         site = self._site(site_key)
         if site.kind != "interstitial":
@@ -376,6 +400,7 @@ class Topology:
             raise TopologyError("DIMENSION_MISMATCH")
         return sum(abs(a - b) for a, b in zip(left.half_units, right.half_units)) / 2
 
+    @lru_cache(maxsize=32768)
     def shell(self, source: str, radius: int) -> frozenset[str]:
         origin = self._site(source)
         if radius not in (1, 2):

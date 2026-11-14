@@ -120,6 +120,7 @@ const formValues = (
     // (Voskoboynikov 2020, p. 11; JNM 1994: Td(Ni) = 23 +/- 2 eV).
     // MC default: 20 eV (teammate's model, unchanged).
     qThr: configuration?.q_thr_ev ?? (method === "cellular_automata" ? 23 : 20),
+    escapeWeight: configuration?.escape_weight ?? 0.01,
     weights: { ...defaultWeights, ...configuration?.weights },
     externalDirectionProbabilities: {
       ...defaultExternalDirectionProbabilities,
@@ -152,6 +153,7 @@ export function ConfigurationEditor({
   const [seeds, setSeeds] = useState(initial.seeds);
   const [qMax, setQMax] = useState(initial.qMax);
   const [qThr, setQThr] = useState(initial.qThr);
+  const [escapeWeight, setEscapeWeight] = useState(initial.escapeWeight);
   const [weights, setWeights] = useState(initial.weights);
   const [externalDirectionProbabilities, setExternalDirectionProbabilities] = useState(
     initial.externalDirectionProbabilities,
@@ -170,6 +172,7 @@ export function ConfigurationEditor({
     setSeeds(next.seeds);
     setQMax(next.qMax);
     setQThr(next.qThr);
+    setEscapeWeight(next.escapeWeight);
     setWeights(next.weights);
     setExternalDirectionProbabilities(next.externalDirectionProbabilities);
     setRandom(next.random);
@@ -197,6 +200,10 @@ export function ConfigurationEditor({
     }
     if (!Number.isFinite(qMax) || !Number.isFinite(qThr) || qMax < 0 || qThr < 0) {
       setError("Q_max и Q_thr должны быть неотрицательными числами.");
+      return null;
+    }
+    if (!Number.isFinite(escapeWeight) || escapeWeight < 0) {
+      setError("Вес выхода атома должен быть неотрицательным числом.");
       return null;
     }
     if (Object.values(weights).some((value) => !Number.isFinite(value) || value < 0 || value > 1)) {
@@ -240,6 +247,7 @@ export function ConfigurationEditor({
       ...seeds,
       q_max_ev: qMax,
       q_thr_ev: qThr,
+      escape_weight: escapeWeight,
       weights,
       external_direction_probabilities: externalDirectionProbabilities,
     };
@@ -292,13 +300,13 @@ export function ConfigurationEditor({
         </summary>
         {method === "cellular_automata" && (
           <div className="weights-intro">
-            <strong>Детерминированный выбор перехода</strong>
+            <strong>Выбор перехода клеточным автоматом</strong>
             <p>
-              В методе клеточных автоматов переход выбирается не случайно, а
-              детерминированно: из всех допустимых назначений выбирается
-              позиция с максимальным суммарным весом (принцип минимальной
-              энергии). Веса ниже задают предпочтительность операций, но
-              окончательный выбор однозначен при фиксированном состоянии.
+              Сначала случайно проверяется вылет с его нормированной вероятностью.
+              Если атом не вылетел, обычный переход выбирается детерминированно:
+              по приоритету операции, затем первый контур перед вторым и затем
+              по ключу позиции. При одинаковом состоянии результат обычного
+              перехода воспроизводим.
             </p>
           </div>
         )}
@@ -309,8 +317,38 @@ export function ConfigurationEditor({
             с той же комбинацией типа, контура и положения относительно металла.
             Для движения снаружи дополнительно учитывается вероятность направления.
           </p>
-          <code>Pᵢ = P(тип) × P(контур) × P(положение) / N</code>
+          <code>aᵢ = P(тип) × P(контур) × P(положение) / N; Z = Σaᵢ + Aвылет; Pᵢ = aᵢ / Z</code>
         </div>
+        <section className="weight-section" aria-labelledby="escape-weight-title">
+          <div className="weight-section-heading">
+            <span>↗</span>
+            <div>
+              <h3 id="escape-weight-title">Выход атома из системы</h3>
+              <p>Вес вылета учитывает долю пустоты в первом и втором контурах и участвует в общей нормировке.</p>
+            </div>
+          </div>
+          <div className="weight-rows">
+            <label className="weight-row">
+              <span className="weight-route">
+                <strong>Вес выхода за границу</strong>
+                <small>Чем больше позиций контура выходит в пустоту, тем выше вероятность. Значение 0 отключает вылет.</small>
+              </span>
+              <span className="weight-input-wrap">
+                <span>W</span>
+                <input
+                  aria-label="Вес выхода атома из системы"
+                  data-testid="escape-weight"
+                  type="number"
+                  min={0}
+                  step={0.01}
+                  value={escapeWeight}
+                  onChange={(event) => setEscapeWeight(number(event.target.value))}
+                />
+              </span>
+            </label>
+          </div>
+          <code>Aвылет = Wвылет × [P₁ × (m₁/M₁) + P₂ × (m₂/M₂)]; P(вылет) = Aвылет / (Aвылет + Σaᵢ)</code>
+        </section>
         {sourceProbabilityGroups.map((group, groupIndex) => (
           <section className="weight-section" aria-labelledby={`source-${group.id}-probabilities-title`} key={group.id}>
             <div className="weight-section-heading">
@@ -396,6 +434,7 @@ export function ConfigurationEditor({
             ))}
             <div><dt>Зерно структуры / зерно симуляции</dt><dd>{locked.seed_init} / {locked.seed_sim}</dd></div>
             <div><dt>Максимальная энергия / порог активации</dt><dd>{locked.q_max_ev} / {locked.q_thr_ev} эВ</dd></div>
+            <div><dt>Вес выхода атома из системы</dt><dd data-testid="locked-escape-weight">{locked.escape_weight}</dd></div>
             {(Object.entries(locked.weights) as [WeightKey, number][]).filter(([key]) => probabilityLabels.has(key)).map(([key, value]) => (
               <div key={key}>
                 <dt>{probabilityLabels.get(key) ?? `Вероятность ${key}`}</dt>

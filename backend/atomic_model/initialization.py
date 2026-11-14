@@ -23,10 +23,10 @@ def _capacities(topology):
     n0 = len(topology.metal_domain.lattice_keys)
     if isinstance(topology.sites, RegularSites):
         interior = math.prod(size - 1 for size in topology.dimensions)
-        return {"vacancies": n0, "interstitials": interior, "adatoms": len(topology.sites) - n0 - interior}
+        return {"vacancies": n0, "interstitials": interior, "adatoms": topology.interstitial_capacity() - interior}
     return {"vacancies": n0,
             "interstitials": sum(site.kind == "interstitial" and site.metal_relation == "interior" for site in topology.sites.values()),
-            "adatoms": sum(site.metal_relation == "outside" for site in topology.sites.values())}
+            "adatoms": sum(site.metal_relation == "outside" and topology.is_physical_site(site.key) for site in topology.sites.values())}
 
 
 @dataclass(frozen=True)
@@ -147,7 +147,7 @@ class Initializer:
         )
         external = frozenset(
             key for key, site in topology.sites.items()
-            if site.metal_relation == "outside"
+            if site.metal_relation == "outside" and topology.is_physical_site(site.key)
         )
         if spec.n_i > len(interior) or spec.n_as > len(external):
             raise InitializationError("INITIAL_CONFIGURATION_INFEASIBLE")
@@ -207,7 +207,7 @@ class Initializer:
         raise InitializationError("INITIAL_CONFIGURATION_INFEASIBLE")
 
     def _regular_build(self, topology, configuration, spec, rng):
-        from backend.atomic_model.regular_grid import key_at
+        from backend.atomic_model.regular_grid import key_at, parse_key
         capacities = _capacities(topology)
         if spec.n_i > capacities["interstitials"] or spec.n_as > capacities["adatoms"]:
             raise InitializationError("INITIAL_CONFIGURATION_INFEASIBLE")
@@ -220,8 +220,22 @@ class Initializer:
             for atom_id in rng.sample(range(capacities["vacancies"]), spec.n_v):
                 del state.occupied[state.atoms[atom_id]]
                 del state.atoms[atom_id]
-            interior_pool = ([key for key in interior if any(neighbor in state.occupied
-                              for neighbor in topology.contact_neighbors(key))] if spec.n_v else interior)
+            if spec.n_v:
+                # On a regular grid an interstitial touches only the 2**d
+                # lattice corners around it. Generate those keys directly;
+                # going through RegularGraph reparses the same key and builds
+                # several temporary collections for every candidate.
+                interior_pool = []
+                for key in interior:
+                    _, point = parse_key(key)
+                    if any(
+                        key_at("lattice", tuple(value + delta for value, delta in zip(point, corner)))
+                        in state.occupied
+                        for corner in product((-1, 1), repeat=len(point))
+                    ):
+                        interior_pool.append(key)
+            else:
+                interior_pool = interior
             if len(interior_pool) < spec.n_i:
                 continue
             next_atom_id = capacities["vacancies"]
@@ -231,7 +245,7 @@ class Initializer:
                 next_atom_id += 1
             frontier = ({neighbor for boundary in topology.metal_domain.boundary_keys if boundary in state.occupied
                          for neighbor in topology.contact_neighbors(boundary)
-                         if topology.sites[neighbor].metal_relation == "outside" and neighbor not in state.occupied}
+                         if topology.sites[neighbor].metal_relation == "outside" and topology.is_physical_site(neighbor) and neighbor not in state.occupied}
                         if spec.n_as else set())
             for _ in range(spec.n_as):
                 if not frontier:
@@ -242,7 +256,7 @@ class Initializer:
                 state.occupied[key] = next_atom_id
                 next_atom_id += 1
                 frontier.update(neighbor for neighbor in topology.contact_neighbors(key)
-                                if topology.sites[neighbor].metal_relation == "outside" and neighbor not in state.occupied)
+                                if topology.sites[neighbor].metal_relation == "outside" and topology.is_physical_site(neighbor) and neighbor not in state.occupied)
             if next_atom_id != capacities["vacancies"] + spec.n_i + spec.n_as:
                 continue
             try:

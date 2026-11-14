@@ -31,6 +31,8 @@ class HistoryDelta:
     atom_changes: tuple[AtomChange, ...]
     act_number_before: int
     act_number_after: int
+    escaped_atoms_before: int
+    escaped_atoms_after: int
     revision_before: int
     revision_after: int
     random_state_before: object
@@ -274,6 +276,8 @@ class SimulationHistory:
         target._metric_log = deepcopy(payload["metrics"])
         for item in entries:
             row = dict(item)
+            row.setdefault("escaped_atoms_before", 0)
+            row.setdefault("escaped_atoms_after", 0)
             row["atom_changes"] = tuple(AtomChange(**change) for change in row["atom_changes"])
             for name in ("state_before", "state_after", "checkpoint_after"):
                 if row[name] is not None:
@@ -350,6 +354,8 @@ class SimulationHistory:
                 atom_changes=(),
                 act_number_before=0,
                 act_number_after=0,
+                escaped_atoms_before=0,
+                escaped_atoms_after=0,
                 revision_before=0,
                 revision_after=0,
                 random_state_before=_copy_random(random_before),
@@ -378,6 +384,8 @@ class SimulationHistory:
             atom_changes=atom_changes,
             act_number_before=before.act_number,
             act_number_after=after.act_number,
+            escaped_atoms_before=before.escaped_atoms,
+            escaped_atoms_after=after.escaped_atoms,
             revision_before=before.revision,
             revision_after=after.revision,
             random_state_before=_copy_random(random_before),
@@ -481,6 +489,9 @@ class SimulationHistory:
             self._current_state.act_number = (
                 delta.act_number_after if forward else delta.act_number_before
             )
+            self._current_state.escaped_atoms = (
+                delta.escaped_atoms_after if forward else delta.escaped_atoms_before
+            )
             self._current_state.revision = (
                 delta.revision_after if forward else delta.revision_before
             )
@@ -572,6 +583,8 @@ class SimulationHistory:
             atom_changes=(),
             act_number_before=getattr(self._initial.state, "act_number", 0),
             act_number_after=second.act_number_after,
+            escaped_atoms_before=getattr(self._initial.state, "escaped_atoms", 0),
+            escaped_atoms_after=second.escaped_atoms_after,
             revision_before=getattr(self._initial.state, "revision", 0),
             revision_after=second.revision_after,
             random_state_before=_copy_random(self._initial.random_state),
@@ -606,6 +619,9 @@ class SimulationHistory:
                 state.atoms[change.atom_id] = destination
                 state.occupied[destination] = change.atom_id
         state.act_number = delta.act_number_after if forward else delta.act_number_before
+        state.escaped_atoms = (
+            delta.escaped_atoms_after if forward else delta.escaped_atoms_before
+        )
         state.revision = delta.revision_after if forward else delta.revision_before
         return state
 

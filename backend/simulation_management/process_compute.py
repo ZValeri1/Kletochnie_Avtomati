@@ -48,6 +48,8 @@ def _compute(simulation_id, expected_revision, initial, count):
             previous_random_core = random_core
             rows.append((event, state.metrics_points[-1], changes, packed_random))
             revision += 1
+            if not state.atoms:
+                break
         except Exception as failure:
             error = (type(failure).__name__, str(failure))
             break

@@ -3,7 +3,7 @@ from __future__ import annotations
 from copy import deepcopy
 from dataclasses import dataclass, field
 
-from backend.atomic_model.errors import StateInvariantError, TopologyError
+from backend.atomic_model.errors import StateInvariantError
 from backend.atomic_model.topology import Topology
 from backend.atomic_model.sparse_map import SparseMap
 from backend.atomic_model.payload_copy import copy_payload
@@ -15,6 +15,7 @@ class SimulationState:
     occupied: dict[str, int]
     act_number: int = 0
     revision: int = 0
+    escaped_atoms: int = 0
     events: list[dict] = field(default_factory=list)
     metrics_points: list[dict] = field(default_factory=list)
     configuration: dict = field(default_factory=dict)
@@ -41,10 +42,11 @@ class SimulationState:
     def atom_ids(self):
         version = (id(self.atoms), self.atoms.keys_version) if isinstance(self.atoms, SparseMap) else None
         if version is None or version != self._ids_version:
-            from backend.atomic_model.regular_grid import IdealAtoms
-            self._ids = (range(len(self.atoms)) if isinstance(self.atoms, SparseMap)
-                         and isinstance(self.atoms.baseline, IdealAtoms) and self.atoms.keys_version == 0
-                         else tuple(sorted(self.atoms)))
+            from backend.atomic_model.regular_grid import IdealAtoms, LiveAtomIds
+            if isinstance(self.atoms, SparseMap) and isinstance(self.atoms.baseline, IdealAtoms):
+                self._ids = range(len(self.atoms)) if self.atoms.keys_version == 0 else LiveAtomIds(self.atoms)
+            else:
+                self._ids = tuple(sorted(self.atoms))
             self._ids_version = version
         return self._ids
 
@@ -55,7 +57,7 @@ class SimulationState:
             atoms = IdealAtoms(topology.dimensions, topology.metal_domain.offset)
             state = cls(atoms=SparseMap(atoms), occupied=SparseMap(IdealOccupied(atoms)), configuration=deepcopy(configuration or {}))
             state._validated = (topology, state.signature())
-            state._metrics = {"n_correct": len(atoms), "n_v": 0, "n_i": 0, "n_as": 0, "d": 0, "s": 0.0}
+            state._metrics = {"n_correct": len(atoms), "n_v": 0, "n_i": 0, "n_as": 0, "n_lost": 0, "d": 0, "s": 0.0, "s_legacy": 0.0}
             state._metric_signature = state.signature()
             state._metric_topology = topology
             return state
@@ -95,6 +97,7 @@ class SimulationState:
             occupied=self.occupied.fork() if isinstance(self.occupied, SparseMap) else dict(self.occupied),
             act_number=self.act_number,
             revision=self.revision,
+            escaped_atoms=self.escaped_atoms,
             events=list(self.events) if include_history else [],
             metrics_points=list(self.metrics_points) if include_history else [],
             configuration=copy_payload(self.configuration),
@@ -130,7 +133,7 @@ class SimulationState:
         if trusted is not None:
             topology = trusted[0]
             # Validate destination even for a direct relocate outside EventExecutor.
-            if destination_key not in topology.sites:
+            if not topology.is_physical_site(destination_key):
                 return
             self._changed_sites.update((source, destination_key))
             self._local = (topology, self.signature())
@@ -143,12 +146,20 @@ class SimulationState:
                     values[category] += sign
                     if key in topology.metal_domain.lattice_keys:
                         values["n_v"] -= sign
-                self._metrics = MetricsCalculator.from_counts(values).model_dump()
+                self._metrics = MetricsCalculator.from_counts(
+                    values, topology, self.escaped_atoms
+                ).model_dump()
                 self._metric_signature = self.signature()
                 self._metric_topology = topology
 
     def relocate_many(self, changes) -> None:
         changes = dict(changes)
+        for atom_id in tuple(changes):
+            if changes[atom_id] is None:
+                del self.occupied[self.atoms[atom_id]]
+                del self.atoms[atom_id]
+                self.escaped_atoms += 1
+                del changes[atom_id]
         if len(changes) <= 1:
             for atom_id, destination in changes.items():
                 if self.atoms.get(atom_id) != destination:
@@ -167,7 +178,7 @@ class SimulationState:
         for atom_id, destination in changes.items():
             self.atoms[atom_id] = destination
             self.occupied[destination] = atom_id
-        if trusted and all(destination in trusted[0].sites for destination in changes.values()):
+        if trusted and all(trusted[0].is_physical_site(destination) for destination in changes.values()):
             self._changed_sites.update(sources.values())
             self._changed_sites.update(changes.values())
             self._local = (trusted[0], self.signature())
@@ -177,10 +188,8 @@ class SimulationState:
         if signature is not None and self._validated == (topology, signature):
             return
         if signature is not None and self._local == (topology, signature):
-            try:
-                topology.validate_changed_occupancy(self.occupied, self._changed_sites)
-            except TopologyError as error:
-                raise StateInvariantError(error.code) from error
+            # Escape can remove the last occupied support of another atom.
+            # Remaining atoms stay in their valid physical positions.
             self._validated = (topology, signature)
             self._changed_sites.clear()
             self._local = None
@@ -201,7 +210,7 @@ class SimulationState:
                 new = self.atoms.get(atom_id)
                 if new is not None:
                     changed_sites.add(new)
-                    if new not in topology.sites or self.occupied.get(new) != atom_id:
+                    if not topology.is_physical_site(new) or self.occupied.get(new) != atom_id:
                         raise StateInvariantError("OCCUPANCY_MISMATCH")
             if len(self.atoms) != len(self.occupied):
                 raise StateInvariantError("OCCUPANCY_MISMATCH")
@@ -209,23 +218,15 @@ class SimulationState:
                 occupant = self.occupied.get(site)
                 if occupant is not None and self.atoms.get(occupant) != site:
                     raise StateInvariantError("OCCUPANCY_MISMATCH")
-            try:
-                topology.validate_changed_occupancy(self.occupied, changed_sites)
-            except TopologyError as error:
-                raise StateInvariantError(error.code) from error
             self._validated = (topology, signature)
             return
         if len(set(self.atoms.values())) != len(self.atoms):
             raise StateInvariantError("SITE_OCCUPIED")
-        if any(site_key not in topology.sites for site_key in self.atoms.values()):
+        if any(not topology.is_physical_site(site_key) for site_key in self.atoms.values()):
             raise StateInvariantError("UNKNOWN_SITE")
         expected = {site_key: atom_id for atom_id, site_key in self.atoms.items()}
         if self.occupied != expected:
             raise StateInvariantError("OCCUPANCY_MISMATCH")
-        try:
-            topology.validate_occupancy(self.occupied)
-        except TopologyError as error:
-            raise StateInvariantError(error.code) from error
         if signature is not None:
             self._validated = (topology, signature)
 
@@ -242,6 +243,7 @@ class SimulationState:
                 "occupied": {key: self.occupied.get(key) for key in self.occupied.changed_keys()
                              if self.occupied.get(key) != self.occupied.baseline.get(key)},
                 "act_number": self.act_number, "revision": self.revision,
+                "escaped_atoms": self.escaped_atoms,
                 "events": deepcopy(self.events), "metrics_points": deepcopy(self.metrics_points),
                 "configuration": deepcopy(self.configuration),
             }
@@ -250,6 +252,7 @@ class SimulationState:
             "occupied": dict(self.occupied),
             "act_number": self.act_number,
             "revision": self.revision,
+            "escaped_atoms": self.escaped_atoms,
             "events": deepcopy(self.events),
             "metrics_points": deepcopy(self.metrics_points),
             "configuration": deepcopy(self.configuration),
@@ -276,16 +279,42 @@ class SimulationState:
                         target[key] = int(value) if field_name == "occupied" else value
             state.act_number = payload.get("act_number", 0)
             state.revision = payload.get("revision", 0)
+            state.escaped_atoms = payload.get("escaped_atoms", 0)
             state.events = deepcopy(payload.get("events", []))
             state.metrics_points = deepcopy(payload.get("metrics_points", []))
+            cls._add_legacy_entropy(state.events, state.metrics_points)
             state.validate(topology)
             return state
         if payload.get("storage") is not None:
             raise StateInvariantError("UNKNOWN_STATE_STORAGE")
-        return cls(
+        state = cls(
             atoms={int(key): value for key, value in payload["atoms"].items()},
             occupied={key: int(value) for key, value in payload["occupied"].items()},
             act_number=payload.get("act_number", 0), revision=payload.get("revision", 0),
+            escaped_atoms=payload.get("escaped_atoms", 0),
             events=deepcopy(payload.get("events", [])), metrics_points=deepcopy(payload.get("metrics_points", [])),
             configuration=deepcopy(payload.get("configuration", {})),
         )
+        cls._add_legacy_entropy(state.events, state.metrics_points)
+        return state
+
+    @staticmethod
+    def _add_legacy_entropy(events, metrics_points):
+        from backend.atomic_model.metrics import MetricsCalculator
+
+        def migrate(metrics):
+            if isinstance(metrics, dict):
+                metrics["s_legacy"] = MetricsCalculator.legacy_entropy(
+                    metrics.get("n_correct", 0),
+                    metrics.get("n_v", 0),
+                    metrics.get("n_i", 0),
+                    metrics.get("n_as", 0),
+                    metrics.get("n_lost", 0),
+                )
+
+        for point in metrics_points:
+            migrate(point)
+        for event in events:
+            if isinstance(event, dict):
+                migrate(event.get("metrics_before"))
+                migrate(event.get("metrics_after"))

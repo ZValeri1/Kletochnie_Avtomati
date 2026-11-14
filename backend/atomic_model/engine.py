@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import secrets
 from dataclasses import dataclass
 from functools import lru_cache
@@ -93,7 +94,18 @@ class SimulationEngine:
                 outcomes = event_engine.probabilities(
                     topology, source, atom_id, q_n
                 )
-                if source.configuration.get("method") == "cellular_automata":
+                escape = next((item for item in outcomes if item.operation == "escape" and item.selectable), None)
+                ca_escape = (source.configuration.get("method") == "cellular_automata" and escape is not None
+                             and (escape.probability == 1 or random_source.random() < escape.probability))
+                if ca_escape:
+                    from backend.atomic_model.events import EventCandidate
+                    candidate = EventCandidate("escape", atom_id, escape.source_site, escape.destination_site,
+                        escape.shell, escape.operation_weight, escape.shell_weight, escape.position_weight,
+                        escape.total_weight, escape.probability)
+                    execution = self.executor.execute(topology, source, candidate)
+                    reason = "ESCAPED"
+                elif source.configuration.get("method") == "cellular_automata":
+                    outcomes = [item for item in outcomes if item.operation != "escape"]
                     # R4-R7: photonuclear reactions at Q >= 6.29 MeV
                     # (thresholds from Zaman 2018 Table 2 + AME2020)
                     pn_channel = (
@@ -147,7 +159,7 @@ class SimulationEngine:
                     state.revision += 1
                 else:
                     state = execution.state
-                    if len(state.atoms) != len(source.atoms):
+                    if len(state.atoms) != len(source.atoms) - (candidate.operation == "escape"):
                         raise InvalidEventError("INVARIANT_VIOLATION")
             state.validate(topology)
             metrics = self.metrics_calculator.calculate(topology, state)
@@ -157,7 +169,9 @@ class SimulationEngine:
                 ).model_dump()
             )
             source_site = source.atoms[atom_id]
-            destination_site = candidate.destination_key if candidate else None
+            if candidate and candidate.operation == "escape":
+                reason = "ESCAPED"
+            destination_site = candidate.destination_key if candidate and candidate.operation != "escape" else None
             event = EventRecord.create(
                 revision=state.revision,
                 act_number=state.act_number,
@@ -215,7 +229,7 @@ class SimulationEngine:
         if action in {"move", "remove"} and source_key is None:
             raise StateInvariantError("UNKNOWN_ATOM")
         if action in {"move", "add"}:
-            if destination_key not in topology.sites:
+            if not topology.is_physical_site(destination_key):
                 raise StateInvariantError("UNKNOWN_SITE")
             if destination_key in state.occupied:
                 raise StateInvariantError("SITE_OCCUPIED")
@@ -299,6 +313,8 @@ class SimulationEngine:
         del occupied_after_removal[source_key]
         result = []
         for site in topology.sites.values():
+            if not topology.is_physical_site(site.key):
+                continue
             if site.key == source_key:
                 continue
             block_code = None
@@ -352,10 +368,13 @@ class SimulationEngine:
         config["dimensions"] = list(config.get("dimensions", (30, 30)))
         config.setdefault("profile", "fe_co60_physical")
         config.setdefault("method", "monte_carlo")
+        config.setdefault("physics_version", 2)
+        if config["physics_version"] != 2:
+            raise ValueError("Unsupported physics version; create a new simulation")
         allowed = {
             "dimensions", "contour", "profile", "method", "initialization_mode",
             "n_v", "n_i", "n_as", "random_parameters", "seed_init", "seed_sim",
-            "q_max_ev", "q_thr_ev", "weights", "external_direction_probabilities",
+            "q_max_ev", "q_thr_ev", "escape_weight", "weights", "external_direction_probabilities", "physics_version",
         }
         unknown = set(config) - allowed
         if unknown:
@@ -372,6 +391,7 @@ class SimulationEngine:
             23.0 if config["method"] == "cellular_automata" else 20.0
         )
         config.setdefault("q_thr_ev", default_q_thr)
+        config.setdefault("escape_weight", 0.01)
         config.setdefault("weights", {})
         config.setdefault(
             "external_direction_probabilities",
@@ -390,6 +410,13 @@ class SimulationEngine:
             config["q_thr_ev"],
         ) < 0:
             raise ValueError("energy configuration cannot be negative")
+        if (
+            not isinstance(config["escape_weight"], (int, float))
+            or isinstance(config["escape_weight"], bool)
+            or not math.isfinite(config["escape_weight"])
+            or config["escape_weight"] < 0
+        ):
+            raise ValueError("escape weight cannot be negative")
         allowed_weights = {
             *EventEngine.DEFAULT_OPERATION_WEIGHTS,
             "shell_r1",

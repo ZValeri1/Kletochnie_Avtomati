@@ -31,8 +31,10 @@ class SimulationMetrics(BaseModel):
     n_v: int = Field(ge=0)
     n_i: int = Field(ge=0)
     n_as: int = Field(ge=0)
+    n_lost: int = Field(ge=0)
     d: int = Field(ge=0)
     s: FiniteFloat = Field(ge=0)
+    s_legacy: FiniteFloat = Field(ge=0)
 
 
 class MetricsPoint(SimulationMetrics):
@@ -81,6 +83,7 @@ class ProbabilityOutcome(BaseModel):
         "external_interstitial",
         "interstitial_external",
         "external_metal",
+        "escape",
     ] | None
     shell: Literal[1, 2]
     operation_weight: FiniteFloat = Field(ge=0)
@@ -203,6 +206,7 @@ class ExternalDirectionProbabilities(BaseModel):
 
 class SimulationConfiguration(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
+    physics_version: Literal[2] = 2
 
     dimensions: tuple[int, ...]
     field_dimensions: tuple[int, ...]
@@ -220,6 +224,7 @@ class SimulationConfiguration(BaseModel):
     seed_sim: int
     q_max_ev: FiniteFloat = Field(ge=0)
     q_thr_ev: FiniteFloat = Field(ge=0)
+    escape_weight: FiniteFloat = Field(ge=0)
     weights: EffectiveWeights
     external_direction_probabilities: ExternalDirectionProbabilities
 
@@ -287,6 +292,7 @@ class SimulationEvent(BaseModel):
         "external_interstitial",
         "interstitial_external",
         "external_metal",
+        "escape",
     ]
     shell: int | None
     q_n: FiniteFloat | None = Field(ge=0)

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, FiniteFloat, field_validator, model_validator
 from pydantic_core import PydanticCustomError
 
 
@@ -117,6 +117,7 @@ class SimulationCreateRequest(VersionedRequest):
     # None lets the engine apply the method-specific default:
     # 23 eV (E_d of nickel) for cellular_automata, 20 eV for monte_carlo.
     q_thr_ev: float | None = Field(default=None, ge=0)
+    escape_weight: FiniteFloat = Field(default=0.01, ge=0)
     weights: OperationWeights | None = None
     external_direction_probabilities: ExternalDirectionProbabilities | None = None
 
@@ -140,6 +141,7 @@ class ConfigurationPatchRequest(VersionedRequest):
     method: Literal["monte_carlo", "cellular_automata"] | None = None
     q_max_ev: float | None = Field(default=None, ge=0)
     q_thr_ev: float | None = Field(default=None, ge=0)
+    escape_weight: FiniteFloat | None = Field(default=None, ge=0)
     weights: OperationWeights | None = None
     external_direction_probabilities: ExternalDirectionProbabilities | None = None
 

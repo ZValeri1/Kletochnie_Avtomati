@@ -189,6 +189,8 @@ class ExperimentService:
                 revision = next_revision
                 record.completed_steps += completed
                 remaining -= completed
+                if not self.manager.sessions[simulation_id].state.atoms:
+                    break
             metrics = await self.manager.metrics_series(simulation_id)
             snapshot = await self.manager.get_snapshot(simulation_id)
             record.successful_runs.append(

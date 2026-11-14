@@ -52,6 +52,7 @@ class SnapshotFactory:
                 "external_direction_probabilities",
                 dict(EventEngine.DEFAULT_EXTERNAL_DIRECTION_PROBABILITIES),
             )
+            raw_configuration.setdefault("escape_weight", 0.01)
             raw_weights = raw_configuration.get("weights", {})
             raw_configuration["weights"] = {
                 **raw_weights,
@@ -68,19 +69,28 @@ class SnapshotFactory:
                 )
                 for item in raw.get("atoms", [])
             )
-            metrics = SimulationMetrics.model_validate(
-                raw.get(
-                    "metrics",
-                    {
-                        "n_correct": len(atoms),
-                        "n_v": 0,
-                        "n_i": 0,
-                        "n_as": 0,
-                        "d": 0,
-                        "s": 0.0,
-                    },
-                )
+            raw_metrics = raw.get(
+                "metrics",
+                {
+                    "n_correct": len(atoms),
+                    "n_v": 0,
+                    "n_i": 0,
+                    "n_as": 0,
+                    "n_lost": 0,
+                    "d": 0,
+                    "s": 0.0,
+                    "s_legacy": 0.0,
+                },
             )
+            raw_metrics.setdefault("n_lost", 0)
+            raw_metrics["s_legacy"] = MetricsCalculator.legacy_entropy(
+                raw_metrics.get("n_correct", 0),
+                raw_metrics.get("n_v", 0),
+                raw_metrics.get("n_i", 0),
+                raw_metrics.get("n_as", 0),
+                raw_metrics.get("n_lost", 0),
+            )
+            metrics = SimulationMetrics.model_validate(raw_metrics)
             return SimulationSnapshot(
                 simulation_id=session.simulation_id,
                 revision=raw.get("revision", 0),
@@ -217,6 +227,7 @@ class SnapshotFactory:
             seed_sim=configuration["seed_sim"],
             q_max_ev=configuration["q_max_ev"],
             q_thr_ev=configuration["q_thr_ev"],
+            escape_weight=configuration.get("escape_weight", 0.01),
             weights=effective_weights,
             external_direction_probabilities=configuration.get(
                 "external_direction_probabilities",

@@ -37,9 +37,20 @@ class EventExecutor:
         state = source.transition_copy()
         if candidate.atom_id not in state.atoms:
             raise InvalidEventError("Atom does not exist")
+        if candidate.operation == "escape":
+            if state.atoms[candidate.atom_id] != candidate.source_key:
+                raise InvalidEventError("Atomic event source changed before commit")
+            if not any(not topology.is_physical_site(key) for radius in (1, 2)
+                       for key in topology.shell(candidate.source_key, radius)):
+                raise InvalidEventError("Escape boundary is unreachable")
+            state.relocate_many([(candidate.atom_id, None)])
+            state.act_number += 1
+            state.revision += 1
+            state.validate(topology)
+            return ExecutionResult(state, (candidate.atom_id,), (candidate.source_key,))
         if candidate.operation not in self.ALLOWED_OPERATIONS:
             raise InvalidEventError("Operation is not executable")
-        if candidate.destination_key not in topology.sites:
+        if not topology.is_physical_site(candidate.destination_key):
             raise InvalidEventError("Destination does not exist")
         if state.atoms[candidate.atom_id] != candidate.source_key:
             raise InvalidEventError("Atomic event source changed before commit")
@@ -94,7 +105,7 @@ class EventExecutor:
                 raise InvalidEventError("Atom does not exist")
             if candidate.operation not in self.ALLOWED_OPERATIONS:
                 raise InvalidEventError("Operation is not executable")
-            if candidate.destination_key not in topology.sites:
+            if not topology.is_physical_site(candidate.destination_key):
                 raise InvalidEventError("Destination does not exist")
             if state.atoms[candidate.atom_id] != candidate.source_key:
                 raise InvalidEventError("Atomic event source changed before commit")

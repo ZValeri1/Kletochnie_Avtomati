@@ -120,6 +120,7 @@ export function ExperimentPanel({
                   <th>seed_init</th>
                   <th>seed_sim</th>
                   <th>D фин.</th>
+                  <th>Улетело</th>
                   <th>S фин.</th>
                 </tr>
               </thead>
@@ -133,7 +134,8 @@ export function ExperimentPanel({
                       <td>{run.derived_seeds.seed_init}</td>
                       <td>{run.derived_seeds.seed_sim}</td>
                       <td>{final?.d ?? "—"}</td>
-                      <td>{final?.s.toFixed(4) ?? "—"}</td>
+                      <td>{final?.n_lost ?? "—"}</td>
+                      <td>{final?.s.toExponential(4) ?? "—"}</td>
                     </tr>
                   );
                 })}

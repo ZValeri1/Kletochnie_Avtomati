@@ -1,5 +1,6 @@
 """Implicit regular geometry. Memory depends on axis lengths, not field volume."""
-from collections.abc import Mapping, Set
+from collections.abc import Mapping, Set, Sequence
+from bisect import bisect_right
 from functools import lru_cache
 from itertools import product
 from math import prod
@@ -161,3 +162,33 @@ class IdealOccupied(Mapping):
 
     def __len__(self):
         return len(self.atoms)
+
+
+class LiveAtomIds(Sequence):
+    """Sorted rank/select over an ideal ID range with sparse deletions/additions."""
+    def __init__(self, atoms):
+        self.size = len(atoms.baseline)
+        self.removed = tuple(sorted(key for key in atoms.changed_keys() if key < self.size and key not in atoms))
+        self.added = tuple(sorted(key for key in atoms.changed_keys() if key >= self.size and key in atoms))
+        self.base_count = self.size - len(self.removed)
+
+    def __len__(self):
+        return self.base_count + len(self.added)
+
+    def __getitem__(self, index):
+        if isinstance(index, slice):
+            return [self[i] for i in range(*index.indices(len(self))) ]
+        if index < 0:
+            index += len(self)
+        if not 0 <= index < len(self):
+            raise IndexError(index)
+        if index >= self.base_count:
+            return self.added[index - self.base_count]
+        low, high = index, index + len(self.removed)
+        while low < high:
+            middle = (low + high) // 2
+            if middle - bisect_right(self.removed, middle) < index:
+                low = middle + 1
+            else:
+                high = middle
+        return low

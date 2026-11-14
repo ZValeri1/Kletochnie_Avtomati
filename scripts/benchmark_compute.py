@@ -46,14 +46,17 @@ def main():
         state, rng = initial.transition_copy(include_history=False), RandomSource(42+index)
         for _ in range(args.steps):
             state = engine.step(state.transition_copy(include_history=False), rng).state
-        digest = hashlib.sha256(json.dumps({"state": state.to_dict(),
-            "rng": rng.get_state()}, sort_keys=True).encode()).hexdigest()
-        return digest
+        return state, rng
 
     start = time.perf_counter()
     with ThreadPoolExecutor(max_workers=args.runs) as pool:
-        hashes = list(pool.map(run, range(args.runs)))
+        results = list(pool.map(run, range(args.runs)))
     elapsed = time.perf_counter()-start
+    # State serialization and trajectory hashing can dominate large sparse
+    # grids. Keep them outside the steady-state Monte Carlo timer.
+    hashes = [hashlib.sha256(json.dumps({"state": state.to_dict(),
+        "rng": rng.get_state()}, sort_keys=True).encode()).hexdigest()
+        for state, rng in results]
     print(json.dumps({"backend": args.backend, "dimensions": args.dimensions,
         "runs": args.runs, "steps_per_run": args.steps, "seconds": elapsed,
         "acts_per_second": args.steps*args.runs/elapsed, "startup_seconds": startup_seconds,

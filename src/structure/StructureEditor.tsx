@@ -72,7 +72,7 @@ export function StructureEditor({
     <section className="panel structure-editor" data-testid="structure-editor" aria-busy={pending || previewPending}>
       <h2>Редактор структуры</h2>
       <p className="muted">Изменение отправляется на сервер. До подтверждённого snapshot атом остаётся на прежнем месте.</p>
-      <div className="editor-summary"><span>Атомов: {snapshot.counts.n_atoms}</span><span>V: {snapshot.metrics.n_v}</span><span>I: {snapshot.metrics.n_i}</span><span>As: {snapshot.metrics.n_as}</span><span>D: {snapshot.metrics.d}</span><span>S: {snapshot.metrics.s.toFixed(4)}</span></div>
+      <div className="editor-summary"><span>Атомов: {snapshot.counts.n_atoms}</span><span>V: {snapshot.metrics.n_v}</span><span>I: {snapshot.metrics.n_i}</span><span>As: {snapshot.metrics.n_as}</span><span>Улетело: {snapshot.metrics.n_lost}</span><span>D: {snapshot.metrics.d}</span><span>S: {snapshot.metrics.s.toExponential(4)}</span></div>
       <label>Атом<select value={selectedAtomId ?? ""} onChange={(event) => onSelectAtom(event.target.value === "" ? null : Number(event.target.value))}><option value="">Не выбран</option>{snapshot.atoms.map((atom) => <option key={atom.id} value={atom.id}>#{atom.id} · {atom.site_key}</option>)}</select></label>
       <label>Позиция назначения<input data-testid="editor-destination" list="allowed-destinations" placeholder="lattice:2,3 или interstitial:2.5,3.5" value={destination} onChange={(event) => setDestination(event.target.value)} /></label>
       <datalist id="allowed-destinations">{allowedDestinations.map((item) => <option key={item.key} value={item.key}>{item.kind} · {item.coordinate.join(", ")}</option>)}</datalist>
@@ -120,7 +120,7 @@ export function StructureEditor({
               <tr><th>N_I</th><td>{preview.counts_before.n_i}</td><td data-testid="preview-after-n-i">{preview.counts_after.n_i}</td></tr>
               <tr><th>N_As</th><td>{preview.counts_before.n_as}</td><td>{preview.counts_after.n_as}</td></tr>
               <tr><th>D</th><td>{preview.metrics_before.d}</td><td data-testid="preview-after-d">{preview.metrics_after.d}</td></tr>
-              <tr><th>S</th><td>{preview.metrics_before.s.toFixed(4)}</td><td>{preview.metrics_after.s.toFixed(4)}</td></tr>
+              <tr><th>S</th><td>{preview.metrics_before.s.toExponential(4)}</td><td>{preview.metrics_after.s.toExponential(4)}</td></tr>
             </tbody>
           </table>
           <p className="muted">Это серверный расчёт без изменения revision, истории или RNG.</p>
@@ -137,7 +137,7 @@ export function StructureEditor({
               <tr><th>N_I</th><td data-testid="manual-before-n-i">{confirmedEdit.metrics_before.n_i}</td><td data-testid="manual-after-n-i">{confirmedEdit.metrics_after.n_i}</td></tr>
               <tr><th>N_As</th><td>{confirmedEdit.metrics_before.n_as}</td><td data-testid="manual-after-n-as">{confirmedEdit.metrics_after.n_as}</td></tr>
               <tr><th>D</th><td>{confirmedEdit.metrics_before.d}</td><td>{confirmedEdit.metrics_after.d}</td></tr>
-              <tr><th>S</th><td>{confirmedEdit.metrics_before.s.toFixed(4)}</td><td>{confirmedEdit.metrics_after.s.toFixed(4)}</td></tr>
+              <tr><th>S</th><td>{confirmedEdit.metrics_before.s.toExponential(4)}</td><td>{confirmedEdit.metrics_after.s.toExponential(4)}</td></tr>
             </tbody>
           </table>
         </div>

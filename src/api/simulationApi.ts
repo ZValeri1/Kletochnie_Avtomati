@@ -151,6 +151,7 @@ export type SimulationCreateInput = {
   method?: "monte_carlo" | "cellular_automata";
   q_max_ev: number;
   q_thr_ev: number;
+  escape_weight: number;
   weights: OperationWeightsInput;
   external_direction_probabilities: {
     toward_metal: number;

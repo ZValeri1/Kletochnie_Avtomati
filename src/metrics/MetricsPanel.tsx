@@ -9,17 +9,19 @@ import { samplePlot } from "./samplePlot";
 const metricLabels: Record<string, string> = {
   n_correct: "Атомы в узлах",
   n_v: "Вакансии",
-  n_i: "Межузельные атомы",
-  n_as: "Атомы за контуром",
+  n_i: "Межузельные атомы внутри",
+  n_as: "Межузельные атомы наружного слоя",
+  n_lost: "Улетевшие атомы",
   d: "Количество дефектов",
-  s: "Энтропия",
+  s: "Новая энтропия",
+  s_legacy: "Старая энтропия",
 };
 
-export function metricPlotPoints(points: MetricsPoint[], key: "d" | "s") {
+export function metricPlotPoints(points: MetricsPoint[], key: "d" | "s" | "s_legacy") {
   if (!points.length) return [];
   const minAct = points.reduce((n, point) => Math.min(n, point.act_number), Infinity);
   const maxAct = points.reduce((n, point) => Math.max(n, point.act_number), 0);
-  const maxValue = points.reduce((n, point) => Math.max(n, point[key]), 1);
+  const maxValue = points.reduce((n, point) => Math.max(n, point[key]), 0) || 1;
   const actSpan = Math.max(1, maxAct - minAct);
   return samplePlot(points, (point) => point[key]).map((point) => ({
     revision: point.revision,
@@ -48,8 +50,10 @@ export function latestSimulationMetrics(
     n_v: latest.n_v,
     n_i: latest.n_i,
     n_as: latest.n_as,
+    n_lost: latest.n_lost,
     d: latest.d,
     s: latest.s,
+    s_legacy: latest.s_legacy,
   };
 }
 
@@ -127,7 +131,7 @@ export function MetricsPanel({
     series,
   );
   const chart = (
-    key: "d" | "s",
+    key: "d" | "s" | "s_legacy",
     title: string,
     description: string,
     yAxisTitle: string,
@@ -138,7 +142,7 @@ export function MetricsPanel({
     const plotWidth = width - margin.left - margin.right;
     const plotHeight = height - margin.top - margin.bottom;
     const maxAct = series.points.reduce((n, point) => Math.max(n, point.act_number), 1);
-    const maxValue = series.points.reduce((n, point) => Math.max(n, point[key]), key === "s" ? 0.1 : 1);
+    const maxValue = series.points.reduce((n, point) => Math.max(n, point[key]), 0) || 1;
     const plotted = samplePlot(series.points, (point) => point[key]);
     const points = plotted.map((point) => ({
       revision: point.revision,
@@ -150,7 +154,9 @@ export function MetricsPanel({
     const xTicks = [...new Set([0, Math.round(maxAct / 2), maxAct])];
     const yTicks = [0, maxValue / 2, maxValue];
     const formatY = (value: number) =>
-      key === "s" ? value.toFixed(2) : Number(value.toFixed(1)).toString();
+      key === "s"
+        ? value.toExponential(2)
+        : Number(value.toFixed(key === "s_legacy" ? 3 : 1)).toString();
     return (
       <figure>
         <figcaption>
@@ -208,7 +214,7 @@ export function MetricsPanel({
         {Object.entries(displayedMetrics).map(([key, value]) => (
           <div key={key} data-testid={`metric-${key.replaceAll("_", "-")}`}>
             <span>{metricLabels[key] ?? key}</span>
-            <strong>{Number(value).toFixed(key === "s" ? 4 : 0)}</strong>
+            <strong>{key === "s" ? Number(value).toExponential(4) : key === "s_legacy" ? Number(value).toFixed(4) : Number(value).toFixed(0)}</strong>
           </div>
         ))}
       </div>
@@ -236,9 +242,15 @@ export function MetricsPanel({
         )}
         {chart(
           "s",
-          "Энтропия",
-          "Структурная энтропия распределения атомов",
-          "Энтропия S",
+          "Новая энтропия",
+          "Конфигурационная энтропия вакансий и межузлий, включая первый наружный слой",
+          "Энтропия S, Дж/К",
+        )}
+        {chart(
+          "s_legacy",
+          "Старая энтропия",
+          "Категории: узлы, вакансии, межузлия и внешние атомы (наружный слой + улетевшие)",
+          "Старая энтропия, безразм.",
         )}
       </div>
     </section>

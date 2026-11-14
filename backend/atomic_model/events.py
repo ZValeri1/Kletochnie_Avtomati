@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import random
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from functools import lru_cache
 from typing import Any, Literal
 
@@ -164,6 +164,7 @@ class EventEngine:
     def __init__(self, configuration: dict | None = None, *, compute_backend=None) -> None:
         configuration = configuration or {}
         self.q_thr = float(configuration.get("q_thr_ev", 20.0))
+        self.escape_weight = float(configuration.get("escape_weight", 0.01))
         self.weights = dict(configuration.get("weights") or {})
         self.source_probabilities = self.effective_source_probabilities(self.weights)
         self.external_direction_probabilities = {
@@ -186,9 +187,19 @@ class EventEngine:
         source_key = state.atoms[atom_id]
         source = topology.sites[source_key]
         raw: list[dict[str, Any]] = []
+        escape_target = None
+        escape_positions = {1: 0, 2: 0}
+        shell_positions = {1: 0, 2: 0}
         for shell in (1, 2):
-            for destination_key in sorted(topology.shell(source_key, shell)):
+            destinations = sorted(topology.shell(source_key, shell))
+            shell_positions[shell] = len(destinations)
+            for destination_key in destinations:
                 destination = topology.sites[destination_key]
+                if not topology.is_physical_site(destination_key):
+                    escape_positions[shell] += 1
+                    if escape_target is None:
+                        escape_target = (shell, destination_key, destination)
+                    continue
                 operation = self._operation(source_key, destination_key, shell, topology)
                 # Public field names are retained for schema compatibility,
                 # but they now carry the three probability factors from the
@@ -210,7 +221,6 @@ class EventEngine:
                     operation,
                     q_test,
                     total_weight,
-                    check_connectivity=False,
                 )
                 raw.append(
                     {
@@ -233,20 +243,6 @@ class EventEngine:
                         "q_thr": self.q_thr,
                     }
                 )
-        pending = [item for item in raw if item["selectable"]]
-        validity = self.compute_backend.validate_candidates(
-            topology, state, atom_id, [item["destination_site"] for item in pending]
-        )
-        for index, item in enumerate(pending):
-            if validity is None:
-                block_code = self._block_code(
-                    topology, state, atom_id, item["destination_site"],
-                    item["shell"], item["operation"], q_test, item["total_weight"],
-                )
-            else:
-                block_code = None if validity[index] else "DISCONNECTED_RESULT"
-            item["block_code"] = block_code
-            item["selectable"] = block_code is None
         group_sizes: dict[tuple[str, int, str, str | None], int] = {}
         for item in raw:
             if not item["selectable"]:
@@ -260,7 +256,7 @@ class EventEngine:
                 ),
             )
             group_sizes[group] = group_sizes.get(group, 0) + 1
-        return [
+        outcomes = [
             ProbabilityOutcome(
                 **item,
                 probability=(
@@ -283,6 +279,26 @@ class EventEngine:
             )
             for item in raw
         ]
+        escape_exposure = sum(
+            self._shell_probability(source_key, shell, topology)
+            * escape_positions[shell]
+            / shell_positions[shell]
+            for shell in (1, 2)
+            if shell_positions[shell]
+        )
+        escape_total_weight = self.escape_weight * escape_exposure
+        if escape_target is not None and escape_total_weight > 0:
+            shell, key, destination = escape_target
+            outcomes.append(ProbabilityOutcome(source_site=source_key, source_coordinate=source.coordinate,
+                source_kind=source.kind, destination_site=key, destination_coordinate=destination.coordinate,
+                destination_kind=destination.kind, destination_relation="outside", operation="escape", shell=shell,
+                operation_weight=self.escape_weight, shell_weight=escape_exposure, position_weight=1.0,
+                total_weight=escape_total_weight,
+                probability=escape_total_weight if q_test >= self.q_thr else 0.0, selectable=q_test >= self.q_thr,
+                block_code=None if q_test >= self.q_thr else "BELOW_THRESHOLD", q_test=q_test, q_thr=self.q_thr))
+        total = sum(item.probability for item in outcomes if item.selectable)
+        return [replace(item, probability=item.probability / total if item.selectable and total else 0.0)
+                for item in outcomes]
 
     def choose(
         self,
@@ -309,8 +325,7 @@ class EventEngine:
                     total_weight=outcome.total_weight,
                     probability=outcome.probability,
                 )
-        # Missing probability mass means that this activated atom does not
-        # move during the current act.
+        # No selectable transition (or a custom random source outside [0, 1)).
         return None
 
     def candidates(
@@ -344,8 +359,6 @@ class EventEngine:
         operation: str | None,
         q_test: float,
         total_weight: float,
-        *,
-        check_connectivity: bool = True,
     ) -> str | None:
         if operation is None:
             return "UNSUPPORTED_TRANSITION"
@@ -355,18 +368,6 @@ class EventEngine:
             return "BELOW_THRESHOLD"
         if total_weight <= 0:
             return "ZERO_PROBABILITY"
-        if not check_connectivity:
-            return None
-        try:
-            from backend.atomic_model.sparse_map import RelocatedOccupancy
-            state.validate(topology)
-            source = state.atoms[atom_id]
-            topology.validate_changed_occupancy(
-                RelocatedOccupancy(state.occupied, source, destination_key, atom_id),
-                (source, destination_key),
-            )
-        except (StateInvariantError, TopologyError):
-            return "DISCONNECTED_RESULT"
         return None
 
     @staticmethod
@@ -419,7 +420,7 @@ class EventEngine:
             if destination_metal:
                 return "external_metal" if source_outside else "interstitial_vacancy"
             if destination.kind == "interstitial":
-                return "external_interstitial" if source_outside else "interstitial_interstitial"
+                return "external_interstitial" if source_outside else "interstitial_external" if destination_outside else "interstitial_interstitial"
             if destination_outside and not source_outside:
                 return "boundary_external"
             if source_outside and destination_outside:

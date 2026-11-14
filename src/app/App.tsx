@@ -66,7 +66,7 @@ export function App() {
   const [configurationError, setConfigurationError] = useState("");
   const [focusedRevision, setFocusedRevision] = useState<number | null>(null);
   const [playbackMs, setPlaybackMs] = useState(800);
-  const [runMode, setRunMode] = useState<RunMode>("visual");
+  const [runMode, setRunMode] = useState<RunMode>("fast");
   const [experimentStatus, setExperimentStatus] =
     useState<ExperimentStatus | null>(null);
   const [experimentResults, setExperimentResults] =

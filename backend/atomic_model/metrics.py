@@ -28,7 +28,7 @@ class MetricsCalculator:
                 if key is not None:
                     site = topology.sites[key]
                     values["n_as" if site.metal_relation == "outside" else "n_i" if site.kind == "interstitial" else "n_correct"] += 1
-            metrics = self.from_counts(values)
+            metrics = self.from_counts(values, topology, state.escaped_atoms)
             state._metrics, state._metric_signature, state._metric_topology = metrics.model_dump(), signature, topology
             return metrics
         vacancies = sum(
@@ -45,29 +45,54 @@ class MetricsCalculator:
                 interstitials += 1
             else:
                 correct += 1
-        metrics = self.from_counts({"n_correct": correct, "n_v": vacancies, "n_i": interstitials, "n_as": external})
+        metrics = self.from_counts(
+            {"n_correct": correct, "n_v": vacancies, "n_i": interstitials, "n_as": external},
+            topology,
+            state.escaped_atoms,
+        )
         state._metrics = metrics.model_dump()
         state._metric_signature = signature
         state._metric_topology = topology
         return metrics
 
     @staticmethod
-    def from_counts(values) -> SimulationMetrics:
+    def from_counts(values, topology, escaped_atoms=0) -> SimulationMetrics:
         correct, vacancies, interstitials, external = (values[key] for key in ("n_correct", "n_v", "n_i", "n_as"))
-        groups = (correct, vacancies, interstitials, external)
-        total = sum(groups)
-        if total == 0:
-            raise ValueError("Metrics require at least one structural category")
-        entropy = -sum(
-            count * math.log(count / total) for count in groups if count
-        )
+        entropy = MetricsCalculator.entropy(len(topology.metal_domain.lattice_keys),
+            topology.interstitial_capacity(), vacancies, interstitials + external)
         return SimulationMetrics(
             n_correct=correct,
             n_v=vacancies,
             n_i=interstitials,
             n_as=external,
+            n_lost=escaped_atoms,
             d=vacancies + interstitials + external,
             s=max(0.0, entropy),
+            s_legacy=MetricsCalculator.legacy_entropy(
+                correct, vacancies, interstitials, external, escaped_atoms
+            ),
+        )
+
+    @staticmethod
+    def entropy(n, n_prime, vacancies, interstitials):
+        def mixing(capacity, count):
+            if not 0 <= count <= capacity or capacity <= 0:
+                raise ValueError("Defect count is outside the entropy capacity")
+            if count in (0, capacity):
+                return 0.0
+            c = count / capacity
+            return -capacity * (c * math.log(c) + (1 - c) * math.log1p(-c))
+        return 1.380649e-23 * (mixing(n, vacancies) + mixing(n_prime, interstitials))
+
+    @staticmethod
+    def legacy_entropy(correct, vacancies, interstitials, external, escaped=0):
+        groups = (correct, vacancies, interstitials, external + escaped)
+        total = sum(groups)
+        if total <= 0:
+            return 0.0
+        return max(
+            0.0,
+            -sum(count * math.log(count / total) for count in groups if count),
         )
 
     def point(
